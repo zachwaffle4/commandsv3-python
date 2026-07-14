@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "commandsv3"
+version = "0.1.0"
+description = "Python port of WPILib Commands v3"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.12"
+dependencies = [
+    "wpilib>=2027.0.0a6.post4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.15.21",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["commandsv3"]
+
+[tool.uv]
+prerelease = "allow"
