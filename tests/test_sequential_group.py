@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import Command, Mechanism, Scheduler, SequentialGroupBuilder, yield_
+from commands3 import Command, Mechanism, Scheduler, SequentialGroupBuilder, yield_
 
 
 class DummyMechanism(Mechanism):

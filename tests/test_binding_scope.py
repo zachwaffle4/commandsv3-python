@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import (
+from commands3 import (
     Command,
     Mechanism,
     Scheduler,
@@ -14,7 +14,7 @@ from commandsv3 import (
     ForOpMode,
     create_narrowest_scope,
 )
-from commandsv3 import opmode_fetcher
+from commands3 import opmode_fetcher
 
 
 class DummyMechanism(Mechanism):

@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import (
+from commands3 import (
     DEFAULT_PRIORITY,
     LOWEST_PRIORITY,
     Command,

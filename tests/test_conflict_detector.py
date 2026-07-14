@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import Command, Mechanism, find_all_conflicts, throw_if_conflicts
+from commands3 import Command, Mechanism, find_all_conflicts, throw_if_conflicts
 
 
 class DummyMechanism(Mechanism):

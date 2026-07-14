@@ -5,7 +5,7 @@
 import pytest
 import wpilib.simulation as simulation
 
-from commandsv3 import CommandCancelled, wait, wait_until, yield_
+from commands3 import CommandCancelled, wait, wait_until, yield_
 
 
 @pytest.fixture(autouse=True)

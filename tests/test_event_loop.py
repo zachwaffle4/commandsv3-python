@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import EventLoop
+from commands3 import EventLoop
 
 
 def test_bound_actions_run_on_poll():

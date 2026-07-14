@@ -4,7 +4,7 @@
 
 import pytest
 
-from commandsv3 import (
+from commands3 import (
     Command,
     Mechanism,
     ScheduleResult,

@@ -7,7 +7,7 @@ import pytest
 import wpilib
 import wpilib.simulation as simulation
 
-from commandsv3 import (
+from commands3 import (
     Command,
     CommandOpMode,
     CommandRobot,

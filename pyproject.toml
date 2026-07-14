@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "commandsv3"
+name = "commands3"
 version = "0.1.0"
 description = "Python port of WPILib Commands v3"
 readme = "README.md"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["commandsv3"]
+packages = ["commands3"]
 
 [tool.uv]
 prerelease = "allow"

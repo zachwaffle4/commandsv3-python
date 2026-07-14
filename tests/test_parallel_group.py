@@ -5,7 +5,7 @@
 import pytest
 import wpilib.simulation as simulation
 
-from commandsv3 import (
+from commands3 import (
     Command,
     Mechanism,
     ParallelGroupBuilder,

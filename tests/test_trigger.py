@@ -5,7 +5,7 @@
 import pytest
 import wpilib.simulation as simulation
 
-from commandsv3 import Command, Mechanism, Scheduler, Trigger, yield_
+from commands3 import Command, Mechanism, Scheduler, Trigger, yield_
 
 
 class DummyMechanism(Mechanism):
