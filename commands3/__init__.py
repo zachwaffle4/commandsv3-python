@@ -22,6 +22,8 @@ from .command import (
     NeedsExecutionBuilderStage,
     NeedsNameBuilderStage,
     StagedCommandBuilder,
+    no_requirements,
+    requiring
 )
 from .command_opmode import CommandOpMode
 from .command_opmodes import (
@@ -88,8 +90,10 @@ __all__ = [
     "create_utility_opmode",
     "find_all_conflicts",
     "fork",
+    "no_requirements",
     "opmode_fetcher",
     "park",
+    "requiring",
     "throw_if_conflicts",
     "wait",
     "wait_until",

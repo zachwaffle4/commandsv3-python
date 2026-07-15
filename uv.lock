@@ -15,7 +15,7 @@ wheels = [
 ]
 
 [[package]]
-name = "commandsv3"
+name = "commands3"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

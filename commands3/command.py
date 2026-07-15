@@ -39,6 +39,8 @@ __all__ = [
     "StagedCommandBuilder",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
+    "no_requirements",
+    "requiring"
 ]
 
 # Priority is serialized as a 32-bit signed integer in scheduler telemetry,
@@ -324,3 +326,22 @@ class StagedCommandBuilder:
         _throw_if_already_built(self._state)
         self._state.requirements.update(requirements)
         return NeedsExecutionBuilderStage(self._state)
+
+def no_requirements(name: str | None = None):
+    def wrapper(body: CommandBody):
+        return Command.no_requirements(body).named(name or body.__name__)
+    return wrapper
+
+def requiring(*args: str | Mechanism):
+    if args and isinstance(args[0], str):
+        name, reqs = args[0], args[1:]
+    else:
+        name, reqs = None, args
+
+    def wrapper(body: CommandBody):
+        command_name = name or body.__name__
+        if not reqs:
+            return Command.no_requirements(body).named(command_name)
+        return Command.requiring(reqs[0], *reqs[1:]).executing(body).named(command_name)
+    return wrapper
+
