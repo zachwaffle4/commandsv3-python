@@ -141,6 +141,16 @@ class Command:
         return ParallelGroupBuilder().optional(*commands)
 
     @staticmethod
+    def deadline(deadline: Command, *other: Command) -> ParallelGroupBuilder:
+        """
+        Starts building a group that completes once ``deadline`` completes,
+        canceling any ``other`` commands if they have not finished.
+        """
+        from .parallel_group import ParallelGroupBuilder
+
+        return ParallelGroupBuilder().requiring(deadline).optional(*other)
+
+    @staticmethod
     def sequence(*commands: Command) -> SequentialGroupBuilder:
         """Starts building a sequence that runs ``commands`` one after another, in order."""
         from .sequential_group import SequentialGroupBuilder
