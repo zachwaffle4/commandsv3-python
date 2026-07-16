@@ -338,9 +338,14 @@ class StagedCommandBuilder:
         return NeedsExecutionBuilderStage(self._state)
 
 def no_requirements(name: str | None = None):
-    def wrapper(body: CommandBody):
-        return Command.no_requirements(body).named(name or body.__name__)
-    return wrapper
+    def decorator(body: Callable[..., Awaitable[None]]):
+        command_name = name or body.__name__
+
+        def wrapper(*args, **kwargs) -> Command:
+            return Command.no_requirements(lambda: body(*args, **kwargs)).named(command_name)
+
+        return wrapper
+    return decorator
 
 def requiring(*args: str | Mechanism):
     if args and isinstance(args[0], str):
@@ -348,10 +353,15 @@ def requiring(*args: str | Mechanism):
     else:
         name, reqs = None, args
 
-    def wrapper(body: CommandBody):
+    def decorator(body: Callable[..., Awaitable[None]]):
         command_name = name or body.__name__
-        if not reqs:
-            return Command.no_requirements(body).named(command_name)
-        return Command.requiring(reqs[0], *reqs[1:]).executing(body).named(command_name)
-    return wrapper
+
+        def wrapper(*call_args, **call_kwargs) -> Command:
+            bound_body = lambda: body(*call_args, **call_kwargs)
+            if not reqs:
+                return Command.no_requirements(bound_body).named(command_name)
+            return Command.requiring(reqs[0], *reqs[1:]).executing(bound_body).named(command_name)
+
+        return wrapper
+    return decorator
 

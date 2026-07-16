@@ -46,9 +46,10 @@ equivalent yet.
 ## Quick example
 
 ```python
-import commandsv3 as cv3
+import commands3 as cmd3
+from commands3 import yield_
 
-class Drivetrain(cv3.Mechanism):
+class Drivetrain(cmd3.Mechanism):
     def __init__(self):
         super().__init__("Drivetrain")
         # ... motor controllers, etc.
@@ -57,7 +58,7 @@ class Drivetrain(cv3.Mechanism):
         async def body():
             while True:
                 # apply forward()/rotate() to motors
-                await cv3.yield_()
+                await yield_()
 
         return self.run(body).named("Arcade Drive")
 
@@ -65,7 +66,7 @@ class Drivetrain(cv3.Mechanism):
 drivetrain = Drivetrain()
 drivetrain.set_default_command(drivetrain.arcade_drive(get_forward, get_rotate))
 
-scheduler = cv3.Scheduler.get_default()
+scheduler = cmd3.Scheduler.get_default()
 # call scheduler.run() periodically, e.g. from your robot's periodic loop
 ```
 

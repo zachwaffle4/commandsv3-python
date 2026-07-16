@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from .command import (
@@ -22,7 +22,7 @@ from .scheduler import Scheduler
 if TYPE_CHECKING:
     import wpimath.units
 
-__all__ = ["Mechanism"]
+__all__ = ["Mechanism", "requires_self"]
 
 
 class Mechanism:
@@ -78,3 +78,19 @@ class Mechanism:
     def idle_for(self, duration: wpimath.units.seconds) -> Command:
         """A command that claims this mechanism and does nothing for the given duration."""
         return self.idle().with_timeout(duration)
+
+
+def requires_self(name: str | None = None):
+    """
+    Decorates a ``Mechanism`` method so that calling it builds and returns a
+    ``Command`` requiring that mechanism, rather than running the method body
+    directly.
+    """
+    def decorator(body: Callable[..., Awaitable[None]]):
+        command_name = name or body.__name__
+
+        def wrapper(self: Mechanism, *args, **kwargs) -> Command:
+            return self.run(lambda: body(self, *args, **kwargs)).named(command_name)
+
+        return wrapper
+    return decorator

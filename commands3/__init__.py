@@ -45,7 +45,7 @@ from .coroutine import (
 )
 from .event_loop import EventLoop
 from .exceptions import CommandCancelled
-from .mechanism import Mechanism
+from .mechanism import Mechanism, requires_self
 from .opmode_triggers import OpModeTriggers
 from .parallel_group import ParallelGroupBuilder
 from .scheduler import ScheduleResult, Scheduler, CommandState
@@ -72,6 +72,7 @@ __all__ = [
     "ForOpMode",
     "GlobalScope",
     "Mechanism",
+    "requires_self",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
     "OpModeTriggers",
