@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from .command import DEFAULT_PRIORITY, Command, StagedCommandBuilder
 from .conflict_detector import throw_if_conflicts
-from .coroutine import await_all, await_any, fork
+from .coroutine import all_of, any_of, fork
 
 __all__ = ["ParallelGroupBuilder"]
 
@@ -30,15 +30,15 @@ def _build_parallel_group(
 
         if not required_commands:
             # No required commands - just wait for the first optional command
-            # to finish. Note: fork() and await_any() both touch the same
+            # to finish. Note: fork() and any_of() both touch the same
             # optional_commands collection. A member that completes with
-            # zero yields would already be "done" by the time await_any()
+            # zero yields would already be "done" by the time any_of()
             # re-schedules it, causing it to run a second time - avoid using
             # a zero-yield command as a group member (see test_parallel_group.py).
-            await await_any(optional_commands)
+            await any_of(optional_commands)
         else:
             # Wait for every required command to finish.
-            await await_all(required_commands)
+            await all_of(required_commands)
 
         # The scheduler cancels any optional child commands still running
         # once this returns.

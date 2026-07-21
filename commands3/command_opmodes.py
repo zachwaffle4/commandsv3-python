@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hal
 import wpilib
+import wpiutil
 
 from .opmode_triggers import OpModeTriggers
 
@@ -27,8 +28,8 @@ def _register(
     name: str,
     group: str,
     description: str,
-    text_color: wpilib.Color | None,
-    background_color: wpilib.Color | None,
+    text_color: wpiutil.Color | None,
+    background_color: wpiutil.Color | None,
 ) -> OpModeTriggers:
     if text_color is None or background_color is None:
         wpilib.RobotState.add_opmode(mode, name, group, description)
@@ -43,8 +44,8 @@ def create_auto_opmode(
     name: str,
     group: str = "",
     description: str = "",
-    text_color: wpilib.Color | None = None,
-    background_color: wpilib.Color | None = None,
+    text_color: wpiutil.Color | None = None,
+    background_color: wpiutil.Color | None = None,
 ) -> OpModeTriggers:
     """
     Creates and registers an autonomous opmode descriptor. Call
@@ -60,8 +61,8 @@ def create_teleop_opmode(
     name: str,
     group: str = "",
     description: str = "",
-    text_color: wpilib.Color | None = None,
-    background_color: wpilib.Color | None = None,
+    text_color: wpiutil.Color | None = None,
+    background_color: wpiutil.Color | None = None,
 ) -> OpModeTriggers:
     """
     Creates and registers a teleoperated opmode descriptor. Call
@@ -82,8 +83,8 @@ def create_utility_opmode(
     name: str,
     group: str = "",
     description: str = "",
-    text_color: wpilib.Color | None = None,
-    background_color: wpilib.Color | None = None,
+    text_color: wpiutil.Color | None = None,
+    background_color: wpiutil.Color | None = None,
 ) -> OpModeTriggers:
     """
     Creates and registers a utility opmode descriptor. Call

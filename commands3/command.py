@@ -21,14 +21,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ParamSpec, cast
 
-from .coroutine import wait, wait_until
+from .coroutine import await_, wait, wait_until
 
 if TYPE_CHECKING:
     from .mechanism import Mechanism
     from .parallel_group import ParallelGroupBuilder
     from .sequential_group import SequentialGroupBuilder
+
+_P = ParamSpec("_P")
 
 __all__ = [
     "DEFAULT_PRIORITY",
@@ -40,7 +42,7 @@ __all__ = [
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
     "no_requirements",
-    "requiring"
+    "requiring",
 ]
 
 # Priority is serialized as a 32-bit signed integer in scheduler telemetry,
@@ -88,6 +90,15 @@ class Command:
     body: CommandBody
     priority: int = DEFAULT_PRIORITY
     on_cancel: Callable[[], None] = field(default=_no_op)
+
+    def __await__(self):
+        """
+        Lets a command body do ``await other_command`` directly, instead of
+        ``await await_(other_command)`` - schedules this command (if it
+        isn't already scheduled or running) and suspends the calling
+        command until it completes.
+        """
+        return await_(self).__await__()
 
     def requires(self, mechanism: Mechanism) -> bool:
         """Whether this command requires ``mechanism``."""
@@ -276,6 +287,9 @@ class NeedsNameBuilderStage:
         _throw_if_already_built(self._state)
         state = self._state
 
+        if state.body is None:
+            raise ValueError("Command body is required")
+
         command = Command(
             name=name,
             requirements=frozenset(state.requirements),
@@ -337,31 +351,48 @@ class StagedCommandBuilder:
         self._state.requirements.update(requirements)
         return NeedsExecutionBuilderStage(self._state)
 
-def no_requirements(name: str | None = None):
-    def decorator(body: Callable[..., Awaitable[None]]):
-        command_name = name or body.__name__
 
-        def wrapper(*args, **kwargs) -> Command:
-            return Command.no_requirements(lambda: body(*args, **kwargs)).named(command_name)
+def no_requirements(
+    name: str | None = None,
+) -> Callable[[Callable[_P, Awaitable[None]]], Callable[_P, Command]]:
+    def decorator(body: Callable[_P, Awaitable[None]]) -> Callable[_P, Command]:
+        command_name = name or getattr(body, "__name__", repr(body))
+
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Command:
+            return Command.no_requirements(lambda: body(*args, **kwargs)).named(
+                command_name
+            )
 
         return wrapper
+
     return decorator
 
-def requiring(*args: str | Mechanism):
+
+def requiring(
+    *args: str | Mechanism,
+) -> Callable[[Callable[_P, Awaitable[None]]], Callable[_P, Command]]:
+    name: str | None
+    reqs: tuple[Mechanism, ...]
     if args and isinstance(args[0], str):
-        name, reqs = args[0], args[1:]
+        name, reqs = args[0], cast("tuple[Mechanism, ...]", args[1:])
     else:
-        name, reqs = None, args
+        name, reqs = None, cast("tuple[Mechanism, ...]", args)
 
-    def decorator(body: Callable[..., Awaitable[None]]):
-        command_name = name or body.__name__
+    def decorator(body: Callable[_P, Awaitable[None]]) -> Callable[_P, Command]:
+        command_name = name or getattr(body, "__name__", repr(body))
 
-        def wrapper(*call_args, **call_kwargs) -> Command:
-            bound_body = lambda: body(*call_args, **call_kwargs)
+        def wrapper(*call_args: _P.args, **call_kwargs: _P.kwargs) -> Command:
+            def bound_body() -> Awaitable[None]:
+                return body(*call_args, **call_kwargs)
+
             if not reqs:
                 return Command.no_requirements(bound_body).named(command_name)
-            return Command.requiring(reqs[0], *reqs[1:]).executing(bound_body).named(command_name)
+            return (
+                Command.requiring(reqs[0], *reqs[1:])
+                .executing(bound_body)
+                .named(command_name)
+            )
 
         return wrapper
-    return decorator
 
+    return decorator

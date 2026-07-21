@@ -23,7 +23,7 @@ from .command import (
     NeedsNameBuilderStage,
     StagedCommandBuilder,
     no_requirements,
-    requiring
+    requiring,
 )
 from .command_opmode import CommandOpMode
 from .command_opmodes import (
@@ -34,9 +34,9 @@ from .command_opmodes import (
 from .command_robot import CommandRobot
 from .conflict_detector import Conflict, find_all_conflicts, throw_if_conflicts
 from .coroutine import (
+    all_of,
+    any_of,
     await_,
-    await_all,
-    await_any,
     fork,
     park,
     wait,
@@ -82,9 +82,9 @@ __all__ = [
     "SequentialGroupBuilder",
     "StagedCommandBuilder",
     "Trigger",
+    "all_of",
+    "any_of",
     "await_",
-    "await_all",
-    "await_any",
     "create_auto_opmode",
     "create_narrowest_scope",
     "create_teleop_opmode",

@@ -14,6 +14,7 @@ from commands3 import (
     Mechanism,
     OpModeTriggers,
     Scheduler,
+    Trigger,
     create_auto_opmode,
     create_teleop_opmode,
     create_utility_opmode,
@@ -120,7 +121,7 @@ def test_opmode_triggers_enabled_with_extra_condition(fake_fetcher):
     _set_enabled(True)
 
     flag = {"value": False}
-    combined = triggers.enabled(lambda: flag["value"])
+    combined = triggers.enabled(Trigger(lambda: flag["value"]))
 
     Scheduler.get_default().run()
     assert not combined.get_as_boolean()

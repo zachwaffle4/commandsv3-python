@@ -136,23 +136,42 @@ class Trigger:
         """The state of the trigger as of the most recent event loop poll."""
         return self.get_as_boolean()
 
-    def and_(self, condition: _Condition) -> Trigger:
+    def and_(self, condition: _Condition | Trigger) -> Trigger:
         """A trigger active when both this trigger and ``condition`` are active."""
+        new_condition: Callable[[], bool]
+
+        if isinstance(condition, Trigger):
+            new_condition = condition.get_as_boolean
+        else:
+            new_condition = condition
+
         return Trigger(
-            lambda: self.get_as_boolean() and condition(), self._scheduler, self._loop
+            lambda: self.get_as_boolean() and new_condition(),
+            self._scheduler,
+            self._loop,
         )
 
-    def __and__(self, condition: _Condition) -> Trigger:
+    def __and__(self, condition: _Condition | Trigger) -> Trigger:
         """A trigger active when both this trigger and ``condition`` are active."""
         return self.and_(condition)
 
-    def or_(self, condition: _Condition) -> Trigger:
+    def or_(self, condition: _Condition | Trigger) -> Trigger:
         """A trigger active when either this trigger or ``condition`` is active."""
+
+        new_condition: Callable[[], bool]
+
+        if isinstance(condition, Trigger):
+            new_condition = condition.get_as_boolean
+        else:
+            new_condition = condition
+
         return Trigger(
-            lambda: self.get_as_boolean() or condition(), self._scheduler, self._loop
+            lambda: self.get_as_boolean() or new_condition(),
+            self._scheduler,
+            self._loop,
         )
 
-    def __or__(self, condition: _Condition) -> Trigger:
+    def __or__(self, condition: _Condition | Trigger) -> Trigger:
         """A trigger active when either this trigger or ``condition`` is active."""
         return self.or_(condition)
 

@@ -56,14 +56,14 @@ def require_current_state() -> CommandState:
     The state of the command currently executing.
 
     :raises RuntimeError: if no command is currently executing - these
-        primitives (``fork``/``await_``/``await_all``/``await_any``) can
+        primitives (``fork``/``await_``/``all_of``/``any_of``) can
         only be used from within a command that's actually being run by a
         ``Scheduler``.
     """
     state = current_state()
     if state is None:
         raise RuntimeError(
-            "commandsv3 coroutine primitives (fork/await_/await_all/await_any) "
+            "commandsv3 coroutine primitives (fork/await_/all_of/any_of) "
             "can only be used by a command currently being run by a Scheduler"
         )
     return state

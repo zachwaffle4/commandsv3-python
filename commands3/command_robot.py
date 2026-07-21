@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hal
 import wpilib
+import wpiutil
 
 from .command_opmode import CommandOpMode
 from .opmode_triggers import OpModeTriggers
@@ -48,8 +49,8 @@ class CommandRobot(wpilib.OpModeRobotBase):
         name: str,
         group: str,
         description: str,
-        text_color: wpilib.Color | None,
-        background_color: wpilib.Color | None,
+        text_color: wpiutil.Color | None,
+        background_color: wpiutil.Color | None,
     ) -> OpModeTriggers:
         opmode = OpModeTriggers(name)
         if text_color is None or background_color is None:
@@ -71,8 +72,8 @@ class CommandRobot(wpilib.OpModeRobotBase):
         name: str,
         group: str = "",
         description: str = "",
-        text_color: wpilib.Color | None = None,
-        background_color: wpilib.Color | None = None,
+        text_color: wpiutil.Color | None = None,
+        background_color: wpiutil.Color | None = None,
     ) -> OpModeTriggers:
         """Creates and registers an autonomous opmode descriptor."""
         return self._register(
@@ -89,8 +90,8 @@ class CommandRobot(wpilib.OpModeRobotBase):
         name: str,
         group: str = "",
         description: str = "",
-        text_color: wpilib.Color | None = None,
-        background_color: wpilib.Color | None = None,
+        text_color: wpiutil.Color | None = None,
+        background_color: wpiutil.Color | None = None,
     ) -> OpModeTriggers:
         """Creates and registers a teleoperated opmode descriptor."""
         return self._register(
@@ -107,8 +108,8 @@ class CommandRobot(wpilib.OpModeRobotBase):
         name: str,
         group: str = "",
         description: str = "",
-        text_color: wpilib.Color | None = None,
-        background_color: wpilib.Color | None = None,
+        text_color: wpiutil.Color | None = None,
+        background_color: wpiutil.Color | None = None,
     ) -> OpModeTriggers:
         """Creates and registers a utility opmode descriptor."""
         return self._register(

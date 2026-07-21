@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .command import DEFAULT_PRIORITY, Command, StagedCommandBuilder
-from .coroutine import await_
 
 __all__ = ["SequentialGroupBuilder"]
 
@@ -20,7 +19,7 @@ def _build_sequential_group(name: str, commands: list[Command]) -> Command:
 
     async def body() -> None:
         for command in commands:
-            await await_(command)
+            await command
 
     return (
         StagedCommandBuilder()

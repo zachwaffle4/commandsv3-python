@@ -540,7 +540,7 @@ class Scheduler:
         # Find the root ancestor before removing the failed command from the
         # running set, since get_parent_of() reads from that set.
         root: Command | None = command
-        while self.get_parent_of(root) is not None:
+        while root is not None and self.get_parent_of(root) is not None:
             root = self.get_parent_of(root)
 
         self._running_commands.pop(command, None)

@@ -131,11 +131,13 @@ def create_narrowest_scope(scheduler: Scheduler) -> BindingScope:
     selected opmode if there is one, else the global scope.
     """
     current_command = scheduler.current_command()
-    current_opmode = opmode_fetcher.get_fetcher().get_opmode_name()
 
     if current_command is not None:
         return ForCommand(scheduler, current_command)
-    elif current_opmode:
+
+    current_opmode = opmode_fetcher.get_fetcher().get_opmode_name()
+
+    if current_opmode:
         return ForOpMode(current_opmode)
     else:
         return GLOBAL_SCOPE

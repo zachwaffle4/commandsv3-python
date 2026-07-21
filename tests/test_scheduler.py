@@ -9,9 +9,9 @@ from commands3 import (
     Mechanism,
     ScheduleResult,
     Scheduler,
+    all_of,
+    any_of,
     await_,
-    await_all,
-    await_any,
     fork,
     opmode_fetcher,
     yield_,
@@ -278,7 +278,7 @@ def test_await_blocks_until_child_completes(scheduler):
     assert not scheduler.is_running(parent)
 
 
-def test_await_all_waits_for_every_command(scheduler):
+def test_all_of_waits_for_every_command(scheduler):
     m1 = DummyMechanism("m1")
     m2 = DummyMechanism("m2")
     m3 = DummyMechanism("m3")
@@ -297,7 +297,7 @@ def test_await_all_waits_for_every_command(scheduler):
     b = Command.requiring(m3).executing(body_b).named("B")
 
     async def parent_body():
-        await await_all([a, b])
+        await all_of([a, b])
         done.append("parent")
 
     parent = Command.requiring(m1).executing(parent_body).named("Parent")
@@ -309,7 +309,7 @@ def test_await_all_waits_for_every_command(scheduler):
     assert done == ["a", "b", "parent"]
 
 
-def test_await_any_cancels_the_rest(scheduler):
+def test_any_of_cancels_the_rest(scheduler):
     m1 = DummyMechanism("m1")
     m2 = DummyMechanism("m2")
     m3 = DummyMechanism("m3")
@@ -325,7 +325,7 @@ def test_await_any_cancels_the_rest(scheduler):
     slow = Command.requiring(m3).executing(slow_body).named("Slow")
 
     async def parent_body():
-        await await_any([fast, slow])
+        await any_of([fast, slow])
 
     parent = Command.requiring(m1).executing(parent_body).named("Parent")
     scheduler.schedule(parent)

@@ -42,15 +42,17 @@ class DriverStationOpModeFetcher(OpModeFetcher):
 _fetcher: OpModeFetcher | None = None
 
 
-def get_fetcher() -> OpModeFetcher | None:
+def get_fetcher() -> OpModeFetcher:
     """Gets the current fetcher, defaulting to a ``DriverStationOpModeFetcher``."""
     global _fetcher
     if _fetcher is None:
         _fetcher = DriverStationOpModeFetcher()
+
+    assert _fetcher is not None
     return _fetcher
 
 
-def set_fetcher(fetcher: OpModeFetcher) -> None:
+def set_fetcher(fetcher: OpModeFetcher | None) -> None:
     """Replaces the fetcher used by ``get_fetcher()``. Intended for tests."""
     global _fetcher
     _fetcher = fetcher
