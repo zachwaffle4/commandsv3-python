@@ -3,7 +3,7 @@
 # the WPILib BSD license file in the root directory of this project.
 
 import pytest
-import wpilib.simulation as simulation
+from wpilib import simulation
 
 from commands3 import CommandCancelled, wait, wait_until, yield_
 
@@ -114,7 +114,7 @@ def test_cancellation_is_not_caught_by_except_exception():
     async def body():
         try:
             await yield_()
-        except Exception:
+        except Exception:  # noqa: BLE001 - the test is that this does NOT catch CommandCancelled
             caught_wrong_type.append(True)
 
     coro = body()

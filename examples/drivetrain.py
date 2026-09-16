@@ -15,8 +15,8 @@ from commands3 import requires_self, yield_
 class Drivetrain(cmd3.Mechanism):
     def __init__(self) -> None:
         super().__init__("Drivetrain")
-        self._left = wpilib.PWMSparkMax(0)
-        self._right = wpilib.PWMSparkMax(1)
+        self._left = wpilib.PWMMotorController(0)
+        self._right = wpilib.PWMMotorController(1)
         self._right.set_inverted(True)
 
     @requires_self("Arcade Drive")

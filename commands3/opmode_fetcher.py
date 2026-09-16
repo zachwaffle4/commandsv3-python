@@ -14,7 +14,7 @@ import abc
 
 import wpilib
 
-__all__ = ["OpModeFetcher", "DriverStationOpModeFetcher", "get_fetcher", "set_fetcher"]
+__all__ = ["DriverStationOpModeFetcher", "OpModeFetcher", "get_fetcher", "set_fetcher"]
 
 
 class OpModeFetcher(abc.ABC):

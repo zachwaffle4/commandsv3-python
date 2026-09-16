@@ -25,7 +25,7 @@ dependencies = [
 ]
 ```
 
-Requires Python 3.12+ and `wpilib` 2027.0.0a6.post4 or newer.
+Requires Python 3.12+ and `wpilib` 2027.0.0a7 or newer.
 
 ## Why
 
@@ -48,6 +48,7 @@ equivalent yet.
 ```python
 import commands3 as cmd3
 from commands3 import yield_
+
 
 class Drivetrain(cmd3.Mechanism):
     def __init__(self):
@@ -74,11 +75,16 @@ Commands can be composed sequentially or in parallel, cancel each other by
 priority, be bound to triggers, and time out:
 
 ```python
-score = intake.grab().and_then(arm.raise_to_scoring_height()).and_then(intake.release()).named("Score")
+score = (
+    intake.grab()
+    .and_then(arm.raise_to_scoring_height())
+    .and_then(intake.release())
+    .named("Score")
+)
 
 auto = drivetrain.drive_to(target).with_timeout(3.0).named("Auto")
 
-cv3.Trigger(lambda: joystick.getRawButton(1)).on_true(score)
+cmd3.Trigger(lambda: joystick.get_raw_button(1)).on_true(score)
 ```
 
 (HID button bindings like `CommandXboxController` haven't been ported yet -

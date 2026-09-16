@@ -5,16 +5,16 @@
 import pytest
 
 from commands3 import (
-    Command,
-    Mechanism,
-    Scheduler,
-    yield_,
     GLOBAL_SCOPE,
+    Command,
     ForCommand,
     ForOpMode,
+    Mechanism,
+    Scheduler,
     create_narrowest_scope,
+    opmode_fetcher,
+    yield_,
 )
-from commands3 import opmode_fetcher
 
 
 class DummyMechanism(Mechanism):

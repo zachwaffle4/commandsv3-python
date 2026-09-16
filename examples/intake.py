@@ -7,13 +7,13 @@
 import wpilib
 
 import commands3 as cmd3
-from commands3 import wait, requires_self
+from commands3 import requires_self, wait
 
 
 class Intake(cmd3.Mechanism):
     def __init__(self) -> None:
         super().__init__("Intake")
-        self._motor = wpilib.PWMSparkMax(3)
+        self._motor = wpilib.PWMMotorController(3)
 
     @requires_self()
     async def set_throttle(self, throttle: float) -> None:

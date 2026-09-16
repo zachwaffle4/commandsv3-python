@@ -92,7 +92,7 @@ def test_commands_use_identity_equality_not_field_equality():
     b = Command.requiring(m).executing(_noop_body).named("Same Name")
 
     assert a != b
-    assert a == a
+    assert a == a  # noqa: PLR0124 - self-comparison is the point: identity equality
 
 
 def test_when_canceled_hook_is_stored():

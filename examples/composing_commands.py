@@ -13,7 +13,7 @@ some_command` schedules it and waits for completion directly, no separate
 `await_()` call needed.
 """
 
-import wpilib.simulation as simulation
+from wpilib import simulation
 
 import commands3 as cmd3
 from commands3 import all_of, any_of, fork

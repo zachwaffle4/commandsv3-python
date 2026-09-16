@@ -25,8 +25,8 @@ import wpilib
 import wpimath
 import wpimath.units
 
+from . import BindingScope, BindingType, create_narrowest_scope
 from .binding import Binding
-from . import BindingType, BindingScope, create_narrowest_scope
 from .event_loop import EventLoop
 
 if TYPE_CHECKING:

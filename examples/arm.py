@@ -17,7 +17,7 @@ from commands3 import requires_self, wait_until, yield_
 class Arm(cmd3.Mechanism):
     def __init__(self) -> None:
         super().__init__("Arm")
-        self._motor = wpilib.PWMSparkMax(2)
+        self._motor = wpilib.PWMMotorController(2)
         self._top_limit = wpilib.DigitalInput(0)
 
     def at_top(self) -> bool:

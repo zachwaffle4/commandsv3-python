@@ -40,13 +40,17 @@ class Robot(cmd3.CommandRobot):
             ),
         )
 
-        raise_button = teleop.enabled(cmd3.Trigger(self.controller.get_left_bumper_button))
+        raise_button = teleop.enabled(
+            cmd3.Trigger(self.controller.get_left_bumper_button)
+        )
         raise_button.while_true(self.arm.raise_arm())
 
         grab_button = teleop.enabled(cmd3.Trigger(self.controller.get_a_button))
         grab_button.on_true(self.intake.grab())
 
-        release_button = teleop.enabled(cmd3.Trigger(self.controller.get_right_bumper_button))
+        release_button = teleop.enabled(
+            cmd3.Trigger(self.controller.get_right_bumper_button)
+        )
         release_button.on_true(self.intake.release())
 
         self.publish_opmodes()

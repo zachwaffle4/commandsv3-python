@@ -54,16 +54,16 @@ class CommandRobot(wpilib.OpModeRobotBase):
     ) -> OpModeTriggers:
         opmode = OpModeTriggers(name)
         if text_color is None or background_color is None:
-            self.add_opmode_factory(CommandOpMode, mode, name, group, description)
+            self.add_opmode_factory(mode, name, group, description, CommandOpMode)
         else:
             self.add_opmode_factory(
-                CommandOpMode,
                 mode,
                 name,
                 group,
                 description,
                 text_color,
                 background_color,
+                CommandOpMode,
             )
         return opmode
 

@@ -15,13 +15,14 @@ one command is ever actually executing at a time.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .command import Command
     from . import CommandState
+    from .command import Command
 
-__all__ = ["mounted", "current_state", "current_command", "require_current_state"]
+__all__ = ["current_command", "current_state", "mounted", "require_current_state"]
 
 _stack: list[CommandState] = []
 

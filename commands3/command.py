@@ -34,13 +34,13 @@ _P = ParamSpec("_P")
 
 __all__ = [
     "DEFAULT_PRIORITY",
-    "LOWEST_PRIORITY",
     "HIGHEST_PRIORITY",
-    "CommandBody",
+    "LOWEST_PRIORITY",
     "Command",
-    "StagedCommandBuilder",
+    "CommandBody",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
+    "StagedCommandBuilder",
     "no_requirements",
     "requiring",
 ]
@@ -207,12 +207,12 @@ class Command:
 
 class _BuilderState:
     __slots__ = (
-        "requirements",
         "body",
+        "built",
+        "end_condition",
         "on_cancel",
         "priority",
-        "end_condition",
-        "built",
+        "requirements",
     )
 
     def __init__(self) -> None:

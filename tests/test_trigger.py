@@ -3,7 +3,7 @@
 # the WPILib BSD license file in the root directory of this project.
 
 import pytest
-import wpilib.simulation as simulation
+from wpilib import simulation
 
 from commands3 import Command, Mechanism, Scheduler, Trigger, yield_
 

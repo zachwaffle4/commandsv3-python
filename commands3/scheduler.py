@@ -19,11 +19,13 @@ from typing import TYPE_CHECKING, Any
 import wpilib
 
 from . import (
-    execution_context as ec,
     BindingType,
     ForCommand,
     ForOpMode,
     create_narrowest_scope,
+)
+from . import (
+    execution_context as ec,
 )
 from .binding import Binding
 from .event_loop import EventLoop
@@ -622,14 +624,14 @@ class CommandState:
     # this is the actual hot-path allocation in the framework. __slots__
     # cuts per-instance memory and attribute-access overhead.
     __slots__ = (
-        "command",
-        "parent",
-        "coroutine",
-        "scheduler",
         "binding",
-        "last_runtime_ms",
-        "total_runtime_ms",
+        "command",
+        "coroutine",
         "id",
+        "last_runtime_ms",
+        "parent",
+        "scheduler",
+        "total_runtime_ms",
     )
 
     _last_id = 0

@@ -4,13 +4,13 @@
 
 from . import opmode_fetcher
 from .binding import (
-    Binding,
-    BindingType,
-    BindingScope,
-    GlobalScope,
     GLOBAL_SCOPE,
+    Binding,
+    BindingScope,
+    BindingType,
     ForCommand,
     ForOpMode,
+    GlobalScope,
     create_narrowest_scope,
 )
 from .command import (
@@ -48,12 +48,11 @@ from .exceptions import CommandCancelled
 from .mechanism import Mechanism, requires_self
 from .opmode_triggers import OpModeTriggers
 from .parallel_group import ParallelGroupBuilder
-from .scheduler import ScheduleResult, Scheduler, CommandState
+from .scheduler import CommandState, Scheduler, ScheduleResult
 from .sequential_group import SequentialGroupBuilder
 from .trigger import Trigger
 
 __all__ = [
-    "CommandCancelled",
     "DEFAULT_PRIORITY",
     "GLOBAL_SCOPE",
     "HIGHEST_PRIORITY",
@@ -63,6 +62,7 @@ __all__ = [
     "BindingType",
     "Command",
     "CommandBody",
+    "CommandCancelled",
     "CommandOpMode",
     "CommandRobot",
     "CommandState",
@@ -72,7 +72,6 @@ __all__ = [
     "ForOpMode",
     "GlobalScope",
     "Mechanism",
-    "requires_self",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
     "OpModeTriggers",
@@ -94,6 +93,7 @@ __all__ = [
     "no_requirements",
     "opmode_fetcher",
     "park",
+    "requires_self",
     "requiring",
     "throw_if_conflicts",
     "wait",

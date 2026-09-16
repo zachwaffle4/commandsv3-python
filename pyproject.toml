@@ -10,14 +10,15 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 dependencies = [
-    "wpilib>=2027.0.0a6.post4",
+    "robotpy>=2027.0.0a7",
+    "wpilib>=2027.0.0a7",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "ruff>=0.15.22",
-    "ty>=0.0.61",
+    "ruff>=0.16.7",
+    "ty>=0.0.81",
 ]
 
 [tool.hatch.build.targets.wheel]

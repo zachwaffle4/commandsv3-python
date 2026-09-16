@@ -51,14 +51,14 @@ if TYPE_CHECKING:
     from .command import Command
 
 __all__ = [
-    "yield_",
-    "wait",
-    "wait_until",
-    "park",
-    "fork",
-    "await_",
     "all_of",
     "any_of",
+    "await_",
+    "fork",
+    "park",
+    "wait",
+    "wait_until",
+    "yield_",
 ]
 
 

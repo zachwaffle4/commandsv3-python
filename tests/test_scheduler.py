@@ -7,8 +7,8 @@ import pytest
 from commands3 import (
     Command,
     Mechanism,
-    ScheduleResult,
     Scheduler,
+    ScheduleResult,
     all_of,
     any_of,
     await_,

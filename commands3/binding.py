@@ -18,13 +18,13 @@ if TYPE_CHECKING:
     from .scheduler import Scheduler
 
 __all__ = [
-    "Binding",
-    "BindingType",
-    "BindingScope",
-    "GlobalScope",
     "GLOBAL_SCOPE",
+    "Binding",
+    "BindingScope",
+    "BindingType",
     "ForCommand",
     "ForOpMode",
+    "GlobalScope",
     "create_narrowest_scope",
 ]
 
