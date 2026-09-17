@@ -44,7 +44,7 @@ from .coroutine import (
     yield_,
 )
 from .event_loop import EventLoop
-from .exceptions import CommandCancelled
+from .exceptions import CommandCancelled, failing_command
 from .mechanism import Mechanism, requires_self
 from .opmode_triggers import OpModeTriggers
 from .parallel_group import ParallelGroupBuilder
@@ -88,6 +88,7 @@ __all__ = [
     "create_narrowest_scope",
     "create_teleop_opmode",
     "create_utility_opmode",
+    "failing_command",
     "find_all_conflicts",
     "fork",
     "no_requirements",

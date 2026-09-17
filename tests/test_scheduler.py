@@ -12,10 +12,12 @@ from commands3 import (
     all_of,
     any_of,
     await_,
+    failing_command,
     fork,
     opmode_fetcher,
     yield_,
 )
+from commands3 import execution_context as ec
 
 
 class FakeOpModeFetcher(opmode_fetcher.OpModeFetcher):
@@ -534,3 +536,118 @@ def test_remove_default_command_drops_the_opmode_scoped_binding(
 
     scheduler.run()
     assert not scheduler.is_running(default_command)
+
+
+def test_exception_is_attributed_to_the_command_that_raised_it(scheduler):
+    m = DummyMechanism()
+
+    async def body():
+        raise RuntimeError("boom")
+
+    command = Command.requiring(m).executing(body).named("Exploding")
+    scheduler.schedule(command)
+
+    with pytest.raises(RuntimeError, match="boom") as excinfo:
+        scheduler.run()
+
+    # The execution context has already unwound by the time we catch, so the
+    # exception itself has to carry the attribution.
+    assert ec.current_command() is None
+    assert failing_command(excinfo.value) is command
+    assert any("'Exploding'" in note for note in excinfo.value.__notes__)
+
+
+def test_attribution_does_not_change_the_exception_type_or_message(scheduler):
+    m = DummyMechanism()
+
+    async def body():
+        raise ValueError("original message")
+
+    scheduler.schedule(Command.requiring(m).executing(body).named("Exploding"))
+
+    with pytest.raises(ValueError) as excinfo:
+        scheduler.run()
+
+    assert type(excinfo.value) is ValueError
+    assert str(excinfo.value) == "original message"
+
+
+def test_attribution_names_the_innermost_command_and_its_composition(scheduler):
+    m1 = DummyMechanism("m1")
+    m2 = DummyMechanism("m2")
+
+    async def child_body():
+        await yield_()
+        raise RuntimeError("boom")
+
+    child = Command.requiring(m2).executing(child_body).named("Child")
+
+    async def parent_body():
+        await await_(child)
+
+    parent = Command.requiring(m1).executing(parent_body).named("Parent")
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    with pytest.raises(RuntimeError, match="boom") as excinfo:
+        scheduler.run()
+
+    # The command that actually raised, not the composition root.
+    assert failing_command(excinfo.value) is child
+    notes = " ".join(excinfo.value.__notes__)
+    assert "'Child'" in notes
+    assert "'Parent'" in notes
+
+
+def test_attribution_keeps_the_first_command_if_applied_twice(scheduler):
+    m = DummyMechanism()
+    error = RuntimeError("boom")
+
+    async def body():
+        raise error
+
+    first = Command.requiring(m).executing(body).named("First")
+    scheduler.schedule(first)
+    with pytest.raises(RuntimeError):
+        scheduler.run()
+    assert failing_command(error) is first
+
+    # Re-raising the same exception object from a different command must not
+    # overwrite the original attribution.
+    second = Command.requiring(m).executing(body).named("Second")
+    scheduler.schedule(second)
+    with pytest.raises(RuntimeError):
+        scheduler.run()
+
+    assert failing_command(error) is first
+    assert sum("commands3 command" in n for n in error.__notes__) == 1
+
+
+def test_attribution_never_masks_an_exception_it_cannot_annotate(scheduler):
+    m = DummyMechanism()
+
+    class Unannotatable(Exception):
+        """Rejects both attribute assignment and notes."""
+
+        __slots__ = ()
+
+        def __setattr__(self, name, value):
+            raise AttributeError(name)
+
+        def add_note(self, note):
+            raise AttributeError("no notes")
+
+    async def body():
+        raise Unannotatable("boom")
+
+    scheduler.schedule(Command.requiring(m).executing(body).named("Exploding"))
+
+    # The real failure must still propagate untouched.
+    with pytest.raises(Unannotatable, match="boom") as excinfo:
+        scheduler.run()
+
+    assert failing_command(excinfo.value) is None
+
+
+def test_exception_raised_outside_a_command_is_not_attributed():
+    assert failing_command(RuntimeError("boom")) is None

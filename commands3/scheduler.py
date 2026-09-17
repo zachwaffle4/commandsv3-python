@@ -29,7 +29,7 @@ from . import (
 )
 from .binding import Binding
 from .event_loop import EventLoop
-from .exceptions import CommandCancelled
+from .exceptions import CommandCancelled, _attribute_to_command
 
 if TYPE_CHECKING:
     from .command import Command
@@ -547,6 +547,13 @@ class Scheduler:
 
         self._running_commands.pop(command, None)
         self._remove_orphaned_children(command)
+
+        # Record which command raised before re-raising. The execution context
+        # is unwound by the time `run()`'s caller can catch this, so the
+        # exception itself is the only channel that survives. (Java reports
+        # this through emitCompletedWithErrorEvent instead; the SchedulerEvent
+        # listener mechanism isn't ported yet - see DIVERGENCES.md #4.)
+        _attribute_to_command(error, command, root)
 
         if root is not None and root is not command:
             self.cancel(root)
