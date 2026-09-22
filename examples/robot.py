@@ -13,8 +13,8 @@ Commands v3 has no robot base class of its own - you extend
 `robot_periodic()`. Bindings created while an opmode is active are
 automatically scoped to it, so the ones made in `TeleopOpMode.start()`
 below are torn down when that opmode ends - no manual cleanup needed. For
-programs not using opmodes at all, `commands3.button.teleop()` and friends
-give you the same scoping off the robot mode instead.
+programs not using opmodes at all, `commands3.robot_mode_triggers.teleop()`
+and friends give you the same scoping off the robot mode instead.
 
 Launch with the RobotPy CLI, e.g. `python -m robotpy sim` from this
 directory - this file isn't meant to be run directly with plain `python`.

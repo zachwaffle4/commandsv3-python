@@ -104,8 +104,8 @@ plain boolean-returning callables for now.)
 - **`Trigger`** - starts, stops, or toggles commands based on a boolean
   condition (`on_true`, `while_true`, `toggle_on_true`, etc), composable
   with `.and_()`/`.or_()`/`.negate()`.
-- **`commands3.button`** - trigger factories for robot state, currently
-  `autonomous()`/`teleop()`/`disabled()`/`utility()`. There is no
+- **`commands3.robot_mode_triggers`** - trigger factories for robot state,
+  currently `autonomous()`/`teleop()`/`disabled()`/`utility()`. There is no
   command-specific robot base class: extend `wpilib.OpModeRobot` directly
   and call `Scheduler.get_default().run()` from `robot_periodic()`.
   Bindings created while an opmode or robot mode is active are

@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .command import Command
+    from .coroutine import ForkResult
 
-__all__ = ["CommandCancelled", "failing_command"]
+__all__ = ["CommandCancelled", "ForkFailed", "failing_command"]
 
 #: Attribute the scheduler sets on an exception that escaped a command body.
 #: Read it through :func:`failing_command` rather than by name.
@@ -31,6 +32,35 @@ class CommandCancelled(BaseException):
     that a broad ``except Exception:`` in a command body won't accidentally
     swallow cancellation and keep the command running.
     """
+
+
+class ForkFailed(CommandCancelled):
+    """
+    Raised at a ``fork()``/``await_()``/``all_of()``/``any_of()`` call site
+    when at least one of the given commands couldn't be scheduled and the
+    call was left to cancel on failure (the default).
+
+    Because this is a ``CommandCancelled`` subclass, it unwinds the command
+    and every ancestor it was forked from exactly the way an ordinary
+    cancellation does, running ``try/finally`` cleanup on the way out; the
+    scheduler then cancels the composition's root so every command in it
+    runs its cancellation hooks. Pass ``cancel_on_failure=False`` to get a
+    ``ForkResult`` back instead and handle the failure in the command body.
+
+    Java has no equivalent exception: it sets a flag, yields, and lets the
+    scheduler notice after the yield (see DIVERGENCES.md #8).
+
+    :ivar result: the fork result describing which commands failed and why.
+    """
+
+    def __init__(self, result: ForkResult) -> None:
+        self.result = result
+
+        failures = ", ".join(
+            f"{failure.command.name} ({type(failure).__name__})"
+            for failure in result.failed_commands
+        )
+        super().__init__(f"Failed to fork: {failures}")
 
 
 def failing_command(error: BaseException) -> Command | None:

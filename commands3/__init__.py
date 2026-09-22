@@ -34,6 +34,7 @@ from .command import (
 )
 from .conflict_detector import Conflict, find_all_conflicts, throw_if_conflicts
 from .coroutine import (
+    ForkResult,
     all_of,
     any_of,
     await_,
@@ -44,10 +45,20 @@ from .coroutine import (
     yield_,
 )
 from .event_loop import EventLoop
-from .exceptions import CommandCancelled, failing_command
+from .exceptions import CommandCancelled, ForkFailed, failing_command
 from .mechanism import Mechanism, requires_self
 from .parallel_group import ParallelGroupBuilder
-from .scheduler import CommandState, Scheduler, ScheduleResult
+from .scheduler import (
+    AlreadyRunning,
+    CommandState,
+    FailedScheduleResult,
+    LowerPriorityThanQueuedCommand,
+    LowerPriorityThanRunningCommand,
+    Scheduler,
+    ScheduleResult,
+    Success,
+    SuccessfulScheduleResult,
+)
 from .sequential_group import SequentialGroupBuilder
 from .trigger import Trigger
 
@@ -59,6 +70,7 @@ __all__ = [
     "LOWEST_PRIORITY",
     "TELEOP_MODE_SCOPE",
     "UTILITY_MODE_SCOPE",
+    "AlreadyRunning",
     "AutonomousMode",
     "Binding",
     "BindingScope",
@@ -69,9 +81,14 @@ __all__ = [
     "CommandState",
     "Conflict",
     "EventLoop",
+    "FailedScheduleResult",
     "ForCommand",
     "ForOpmode",
+    "ForkFailed",
+    "ForkResult",
     "GlobalScope",
+    "LowerPriorityThanQueuedCommand",
+    "LowerPriorityThanRunningCommand",
     "Mechanism",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
@@ -81,6 +98,8 @@ __all__ = [
     "Scheduler",
     "SequentialGroupBuilder",
     "StagedCommandBuilder",
+    "Success",
+    "SuccessfulScheduleResult",
     "TeleopMode",
     "Trigger",
     "UtilityMode",

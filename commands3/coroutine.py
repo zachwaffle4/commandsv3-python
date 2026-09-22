@@ -39,6 +39,7 @@ body can call them directly:
 from __future__ import annotations
 
 from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import wpilib
@@ -46,11 +47,14 @@ import wpimath.units
 
 from . import execution_context as _ec
 from .conflict_detector import throw_if_conflicts
+from .exceptions import ForkFailed
 
 if TYPE_CHECKING:
     from .command import Command
+    from .scheduler import CommandState, Scheduler, ScheduleResult
 
 __all__ = [
+    "ForkResult",
     "all_of",
     "any_of",
     "await_",
@@ -123,49 +127,185 @@ async def park() -> None:
         await yield_()
 
 
-def fork(*commands: Command) -> None:
+@dataclass(frozen=True)
+class ForkResult:
+    """
+    The outcome of a ``fork()``/``await_()``/``all_of()``/``any_of()`` call.
+
+    Forking is all-or-nothing: if any of the given commands can't be
+    scheduled, none of them are, and this describes which ones failed and
+    why. By default a failure doesn't produce one of these at all - it
+    raises ``ForkFailed`` and takes the whole composition down with it. Pass
+    ``cancel_on_failure=False`` to get the result back and handle it
+    yourself.
+
+    :ivar scheduler: the scheduler the commands were forked on.
+    :ivar forked_commands: the commands that were successfully forked.
+    :ivar failed_commands: a ``ScheduleResult`` per command that couldn't be
+        forked, explaining why.
+    """
+
+    scheduler: Scheduler
+    forked_commands: tuple[Command, ...]
+    failed_commands: tuple[ScheduleResult, ...]
+
+    @property
+    def successful(self) -> bool:
+        """Whether every command was forked."""
+        return not self.failed_commands
+
+    @property
+    def failed(self) -> bool:
+        """Whether at least one command couldn't be forked."""
+        return bool(self.failed_commands)
+
+    @property
+    def partial_success(self) -> bool:
+        """
+        Whether at least one command was forked *and* at least one failed.
+
+        This can happen when a child immediately schedules a grandchild of a
+        higher priority than a later sibling that shares its requirements -
+        something no up-front check can predict.
+        """
+        return bool(self.forked_commands) and bool(self.failed_commands)
+
+    async def await_completion(self) -> None:
+        """
+        Suspends until every successfully-forked command has finished.
+
+        Unlike forking and then awaiting, this only waits on the commands
+        that are still running, so it won't re-schedule one that already
+        completed. Does nothing if no commands were forked.
+        """
+        for command in self.forked_commands:
+            while self.scheduler.is_scheduled_or_running(command):
+                await yield_()
+
+
+def _check_all_forkable(
+    state: CommandState, commands: Collection[Command], *, cancel_on_failure: bool
+) -> ForkResult:
+    # Checks that every command could be forked, before any of them is.
+    # Conflicts *within* the batch are a bug in the calling code rather than
+    # a runtime condition, so those raise instead of producing a result.
+    throw_if_conflicts(commands)
+
+    schedulable: list[Command] = []
+    unschedulable: list[ScheduleResult] = []
+    for command in commands:
+        result = state.scheduler.is_schedulable(command)
+        if result.successful:
+            schedulable.append(command)
+        else:
+            unschedulable.append(result)
+
+    return _finish(
+        ForkResult(state.scheduler, tuple(schedulable), tuple(unschedulable)),
+        cancel_on_failure=cancel_on_failure,
+    )
+
+
+def _do_fork(
+    state: CommandState, commands: Collection[Command], *, cancel_on_failure: bool
+) -> ForkResult:
+    # The actual scheduling pass. Separate from _check_all_forkable because a
+    # child can immediately schedule a grandchild that conflicts with a later
+    # sibling, which the up-front check can't see coming. A partial success
+    # can't be rolled back - the commands that did start have already
+    # affected the robot - so the choice is to cancel the composition or let
+    # user code deal with it.
+    forked: list[Command] = []
+    failed: list[ScheduleResult] = []
+    for command in commands:
+        result = state.scheduler.schedule(command)
+        if result.successful:
+            forked.append(command)
+        else:
+            failed.append(result)
+
+    return _finish(
+        ForkResult(state.scheduler, tuple(forked), tuple(failed)),
+        cancel_on_failure=cancel_on_failure,
+    )
+
+
+def _finish(result: ForkResult, *, cancel_on_failure: bool) -> ForkResult:
+    if result.failed and cancel_on_failure:
+        raise ForkFailed(result)
+    return result
+
+
+def fork(*commands: Command, cancel_on_failure: bool = True) -> ForkResult:
     """
     Schedules one or more commands to run alongside the current command and
     returns immediately, without waiting for them to complete.
 
     The forked commands are tied to the current command's lifetime: they're
     canceled automatically if the current command is canceled or completes
-    first. To fork and later wait for completion, use ``await_()``/
-    ``all_of()`` afterward.
+    first. To fork and later wait for completion, use the returned result's
+    ``await_completion()``, or ``await_()``/``all_of()`` afterward.
+
+    Forking is all-or-nothing: if any command can't be scheduled, none of
+    them are.
 
     Closest ``asyncio`` analog: ``asyncio.create_task()`` - but there's no
     ``Task`` object returned, and the forked commands are scoped to the
     parent the way a structured-concurrency task group would be, rather than
     running independently until explicitly canceled.
 
+    :param cancel_on_failure: when true (the default), a command that can't
+        be forked raises ``ForkFailed``, canceling this command and the whole
+        composition it belongs to. Set it false to get a failed
+        ``ForkResult`` back and recover in the command body instead.
     :raises ValueError: if any of the given commands require the same
         mechanism as another.
     :raises RuntimeError: if called outside a command currently being run
         by a ``Scheduler``.
+    :raises ForkFailed: if a command couldn't be forked and
+        ``cancel_on_failure`` is true.
     """
     state = _ec.require_current_state()
 
-    throw_if_conflicts(commands)
+    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    if check.failed:
+        return check
 
-    for command in commands:
-        state.scheduler.schedule(command)
+    return _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
 
 
-async def await_(command: Command) -> None:
+async def await_(command: Command, *, cancel_on_failure: bool = True) -> ForkResult:
     """
     Schedules ``command`` (if it isn't already scheduled or running) and
     suspends the current command until it completes.
 
     Closest ``asyncio`` analog: awaiting a single ``Task``.
+
+    :param cancel_on_failure: see ``fork()``.
+    :raises ForkFailed: if the command couldn't be scheduled and
+        ``cancel_on_failure`` is true.
     """
     state = _ec.require_current_state()
 
+    check = _check_all_forkable(state, (command,), cancel_on_failure=cancel_on_failure)
+    if check.failed:
+        return check
+
+    # No siblings, so no chance of the sibling conflict _do_fork() guards
+    # against.
     state.scheduler.schedule(command)
+
     while state.scheduler.is_scheduled_or_running(command):
+        # A one-shot command runs to completion within the schedule call
+        # above, leaving nothing to await.
         await yield_()
 
+    return ForkResult(state.scheduler, (command,), ())
 
-async def all_of(commands: Collection[Command]) -> None:
+
+async def all_of(
+    commands: Collection[Command], *, cancel_on_failure: bool = True
+) -> ForkResult:
     """
     Schedules ``commands`` (any not already scheduled or running) and
     suspends the current command until every one of them has completed.
@@ -174,21 +314,31 @@ async def all_of(commands: Collection[Command]) -> None:
     are no return values to collect, since a ``Command``'s body doesn't
     produce one.
 
+    :param cancel_on_failure: see ``fork()``.
     :raises ValueError: if any of the given commands require the same
         mechanism as another.
+    :raises ForkFailed: if a command couldn't be scheduled and
+        ``cancel_on_failure`` is true.
     """
     state = _ec.require_current_state()
 
-    throw_if_conflicts(commands)
+    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    if check.failed:
+        return check
 
-    for command in commands:
-        state.scheduler.schedule(command)
+    result = _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
+    if result.failed:
+        return result
 
     while any(state.scheduler.is_scheduled_or_running(command) for command in commands):
         await yield_()
 
+    return result
 
-async def any_of(commands: Collection[Command]) -> None:
+
+async def any_of(
+    commands: Collection[Command], *, cancel_on_failure: bool = True
+) -> ForkResult:
     """
     Schedules ``commands`` (any not already scheduled or running) and
     suspends the current command until any one of them completes, then
@@ -198,18 +348,27 @@ async def any_of(commands: Collection[Command]) -> None:
     return_when=asyncio.FIRST_COMPLETED)`` followed by canceling the
     pending ones.
 
+    :param cancel_on_failure: see ``fork()``.
     :raises ValueError: if any of the given commands require the same
         mechanism as another.
+    :raises ForkFailed: if a command couldn't be scheduled and
+        ``cancel_on_failure`` is true.
     """
     state = _ec.require_current_state()
 
-    throw_if_conflicts(commands)
+    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    if check.failed:
+        return check
 
-    for command in commands:
-        state.scheduler.schedule(command)
+    result = _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
+    if result.failed:
+        return result
 
     while all(state.scheduler.is_scheduled_or_running(command) for command in commands):
         await yield_()
 
+    # At least one command exited; cancel the rest.
     for command in commands:
         state.scheduler.cancel(command)
+
+    return result

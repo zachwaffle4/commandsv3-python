@@ -24,5 +24,10 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["commands3"]
 
+[tool.pytest.ini_options]
+# The fast suite only. The simulation suite lives in `simtests/tests` and is
+# run through `robotpy test`, which needs its own plugin - see CLAUDE.md.
+testpaths = ["tests"]
+
 [tool.uv]
 prerelease = "allow"

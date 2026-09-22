@@ -13,7 +13,8 @@ telemetry, and the ``SchedulerEvent`` listener mechanism.
 
 from __future__ import annotations
 
-import enum
+import abc
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import wpilib
@@ -28,14 +29,42 @@ from . import (
 )
 from .binding import Binding
 from .event_loop import EventLoop
-from .exceptions import CommandCancelled, _attribute_to_command
+from .exceptions import CommandCancelled, ForkFailed, _attribute_to_command
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    import wpimath.units
+
     from .command import Command
     from .mechanism import Mechanism
     from .trigger import Trigger
 
-__all__ = ["ScheduleResult", "Scheduler"]
+__all__ = [
+    "AlreadyRunning",
+    "FailedScheduleResult",
+    "LowerPriorityThanQueuedCommand",
+    "LowerPriorityThanRunningCommand",
+    "ScheduleResult",
+    "Scheduler",
+    "Success",
+    "SuccessfulScheduleResult",
+]
+
+
+def _nanos_to_ms(nanos: wpimath.units.nanoseconds) -> wpimath.units.milliseconds:
+    # wpilib.RobotController.get_time() reports nanoseconds (upstream
+    # c65465b004 switched wpiutil's integer timestamps over), while the
+    # scheduler reports milliseconds, matching Java's
+    # Milliseconds.convertFrom(delta, Nanoseconds).
+    #
+    # The wpimath.units names are documentation, not enforcement - they're
+    # aliases for `float` (see wpimath/units.py), the same way robotpy erases
+    # C++ `units::second_t` to a plain float at the binding boundary. Java's
+    # Measure<TimeUnit> safety has no counterpart here, so this one function
+    # is the only place the conversion factor appears, and
+    # tests/test_scheduler_timing.py pins it.
+    return nanos / 1_000_000.0
 
 
 def _require_valid_default_command(
@@ -49,18 +78,98 @@ def _require_valid_default_command(
         )
 
 
-class ScheduleResult(enum.Enum):
-    """The outcome of a ``Scheduler.schedule()`` call."""
+@dataclass(frozen=True)
+class ScheduleResult(abc.ABC):
+    """
+    The outcome of a scheduling attempt. Returned both as a concrete result
+    by ``Scheduler.schedule()`` and as a prediction by
+    ``Scheduler.is_schedulable()``.
 
-    #: The command was successfully scheduled and added to the queue.
-    SUCCESS = enum.auto()
+    Java nests these inside ``Scheduler`` as a sealed interface; here they're
+    module-level classes, since ``coroutine.py`` also needs to name the
+    failure types when reporting a fork failure.
 
-    #: The command is already scheduled or running.
-    ALREADY_RUNNING = enum.auto()
+    **This hierarchy is closed.** Do not subclass ``ScheduleResult``,
+    ``SuccessfulScheduleResult``, or ``FailedScheduleResult`` outside this
+    module - only the scheduler produces these, and code that consumes them
+    is entitled to assume the set of concrete types is exactly the ones
+    defined here (the same guarantee Java gets from ``sealed``, which Python
+    can't enforce). Subclass them at your own risk: a future result type
+    added upstream may collide, and ``isinstance`` checks elsewhere in the
+    framework won't know about yours.
 
-    #: The command is a lower priority than, and conflicts with, an
-    #: already-scheduled or already-running command.
-    LOWER_PRIORITY_THAN_RUNNING_COMMAND = enum.auto()
+    :ivar command: the command that was (or would be) scheduled.
+    """
+
+    command: Command
+
+    @property
+    @abc.abstractmethod
+    def successful(self) -> bool:
+        """Whether the scheduling attempt succeeded."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SuccessfulScheduleResult(ScheduleResult):
+    """
+    Base class for scheduling attempts that succeeded. Internal to this
+    module - see ``ScheduleResult`` on why not to subclass it.
+    """
+
+    @property
+    def successful(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class FailedScheduleResult(ScheduleResult):
+    """
+    Base class for scheduling attempts that failed. Internal to this module -
+    see ``ScheduleResult`` on why not to subclass it.
+    """
+
+    @property
+    def successful(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class Success(SuccessfulScheduleResult):
+    """The command was scheduled."""
+
+
+@dataclass(frozen=True)
+class AlreadyRunning(SuccessfulScheduleResult):
+    """
+    The scheduling attempt was redundant: the command is already scheduled
+    or running. Counts as a success, but the command does not go back through
+    the scheduling process.
+    """
+
+
+@dataclass(frozen=True)
+class LowerPriorityThanRunningCommand(FailedScheduleResult):
+    """
+    The command is a lower priority than a *running* command it shares a
+    requirement with.
+
+    :ivar already_running: the running command that blocked it.
+    """
+
+    already_running: Command
+
+
+@dataclass(frozen=True)
+class LowerPriorityThanQueuedCommand(FailedScheduleResult):
+    """
+    The command is a lower priority than a *queued* command it shares a
+    requirement with.
+
+    :ivar queued_command: the queued command that blocked it.
+    """
+
+    queued_command: Command
 
 
 class Scheduler:
@@ -88,7 +197,7 @@ class Scheduler:
         # enforced by is_scheduled_or_running()), preserving insertion order.
         self._queued_to_run: dict[Command, CommandState] = {}
         self._running_commands: dict[Command, CommandState] = {}
-        self._last_run_time_ms: float = -1.0
+        self._last_run_time_ms: wpimath.units.milliseconds = -1.0
         self._event_loop = EventLoop()
         self._bound_triggers: list[Trigger] = []
 
@@ -200,25 +309,87 @@ class Scheduler:
         Has no effect (returns without scheduling) if the command is
         already scheduled or running, or if it requires a mechanism already
         in use by a higher-priority command.
+
+        :return: the outcome of the attempt. See ``ScheduleResult``.
         """
         scope = create_narrowest_scope(self)
         binding = Binding(scope, BindingType.IMMEDIATE, command)
         return self._schedule_binding(binding)
 
-    def _schedule_binding(self, binding: Binding) -> ScheduleResult:
+    def is_schedulable(self, command: Command) -> ScheduleResult:
+        """
+        Predicts what would happen if ``command`` were scheduled right now,
+        without actually scheduling it. Used by ``fork()``/``await_()`` and
+        friends to check a whole batch of commands before committing to any
+        of them.
+
+        :return: ``AlreadyRunning`` if it's already scheduled or running,
+            ``LowerPriorityThanRunningCommand`` or
+            ``LowerPriorityThanQueuedCommand`` if a conflicting command of a
+            higher effective priority blocks it, else ``Success``.
+        """
+        if self.is_scheduled_or_running(command):
+            return AlreadyRunning(command)
+
+        return self._is_schedulable_from_priority(
+            command, self._ancestry_of(ec.current_state())
+        )
+
+    def _is_schedulable_binding(self, binding: Binding) -> ScheduleResult:
+        # Like is_schedulable(), but used internally for bindings, which may
+        # name a parent command explicitly rather than inheriting whichever
+        # command happens to be executing.
         command = binding.command
 
         if self.is_scheduled_or_running(command):
-            return ScheduleResult.ALREADY_RUNNING
+            return AlreadyRunning(command)
 
-        if self._lower_priority_than_conflicting_commands(command):
-            return ScheduleResult.LOWER_PRIORITY_THAN_RUNNING_COMMAND
+        if isinstance(binding.scope, ForCommand):
+            start = self._running_commands.get(binding.scope.command)
+        else:
+            start = ec.current_state()
 
-        for scheduled_state in self._queued_to_run.values():
-            if not command.conflicts_with(scheduled_state.command):
-                continue
-            if command.is_lower_priority_than(scheduled_state.command):
-                return ScheduleResult.LOWER_PRIORITY_THAN_RUNNING_COMMAND
+        return self._is_schedulable_from_priority(command, self._ancestry_of(start))
+
+    def _ancestry_of(self, state: CommandState | None) -> set[Command]:
+        # The command in `state` plus every command it descends from.
+        ancestry: set[Command] = set()
+        while state is not None:
+            ancestry.add(state.command)
+            state = (
+                self._running_commands.get(state.parent)
+                if state.parent is not None
+                else None
+            )
+        return ancestry
+
+    def _is_schedulable_from_priority(
+        self, command: Command, ancestry: set[Command]
+    ) -> ScheduleResult:
+        conflict = self._lower_priority_than_conflicting_commands(
+            command, ancestry, self._running_commands.values()
+        )
+        if conflict is not None:
+            return LowerPriorityThanRunningCommand(command, conflict)
+
+        conflict = self._lower_priority_than_conflicting_commands(
+            command, ancestry, self._queued_to_run.values()
+        )
+        if conflict is not None:
+            return LowerPriorityThanQueuedCommand(command, conflict)
+
+        return Success(command)
+
+    def _schedule_binding(self, binding: Binding) -> ScheduleResult:
+        command = binding.command
+
+        result = self._is_schedulable_binding(binding)
+        if not isinstance(result, Success):
+            # Check for Success specifically rather than `.successful`: only
+            # a Success can go through the rest of the scheduling process.
+            # AlreadyRunning means what it says on the tin, and running that
+            # command back through scheduling would be wrong.
+            return result
 
         # Track this binding so we can disable it when it's out of scope.
         self._active_bindings.append(binding)
@@ -245,28 +416,53 @@ class Scheduler:
         else:
             self._queued_to_run[command] = state
 
-        return ScheduleResult.SUCCESS
+        return result
 
-    def _lower_priority_than_conflicting_commands(self, command: Command) -> bool:
-        ancestors = set()
-        state = ec.current_state()
-        while state is not None:
-            ancestors.add(state)
-            state = (
-                self._running_commands.get(state.parent)
-                if state.parent is not None
-                else None
-            )
+    def _lower_priority_than_conflicting_commands(
+        self,
+        command: Command,
+        ancestry: set[Command],
+        check_against: Iterable[CommandState],
+    ) -> Command | None:
+        """
+        Finds a command in ``check_against`` that ``command`` conflicts with
+        and is a lower effective priority than.
 
-        for state in self._running_commands.values():
-            if state in ancestors:
+        A command's effective priority is the highest priority in its
+        scheduling hierarchy, so a low-priority child of a high-priority
+        parent can still evict a mid-priority command - and can still be
+        blocked by the low-priority child of an even higher-priority parent.
+
+        :return: the conflicting command, or ``None`` if there isn't one.
+        """
+        max_ancestor_priority = max(
+            [command.priority, *(ancestor.priority for ancestor in ancestry)]
+        )
+
+        for state in list(check_against):
+            if state.command in ancestry:
+                # A command can't conflict with one of its own ancestors.
                 continue
-            if state.command.conflicts_with(command) and command.is_lower_priority_than(
-                state.command
-            ):
-                return True
+            if state.command.conflicts_with(
+                command
+            ) and max_ancestor_priority < self._effective_priority(state):
+                return state.command
 
-        return False
+        return None
+
+    def _effective_priority(self, state: CommandState) -> int:
+        """The highest priority among ``state``'s command and its ancestors."""
+        max_priority = state.command.priority
+        parent = state.parent
+        while parent is not None:
+            max_priority = max(max_priority, parent.priority)
+            parent_state = self._running_commands.get(parent)
+            if parent_state is None:
+                # Parent is no longer running, so the chain stops here. Java
+                # has no such guard and would throw an NPE.
+                break
+            parent = parent_state.parent
+        return max_priority
 
     def _evict_conflicting_on_deck_commands(self, command: Command) -> None:
         for scheduled_command, scheduled_state in list(self._queued_to_run.items()):
@@ -345,6 +541,13 @@ class Scheduler:
 
     @staticmethod
     def _cancel_coroutine(state: CommandState) -> None:
+        if state.finished:
+            # The coroutine already terminated on its own - it completed,
+            # raised, or was unwound by a ForkFailed propagating out of it.
+            # Throwing into it again raises "cannot reuse already awaited
+            # coroutine", so there's nothing left to cancel.
+            return
+
         try:
             state.coroutine.throw(CommandCancelled)
         except (CommandCancelled, StopIteration):
@@ -405,7 +608,7 @@ class Scheduler:
         self._run_commands()
 
         end = wpilib.RobotController.get_time()
-        self._last_run_time_ms = (end - start) / 1000.0
+        self._last_run_time_ms = _nanos_to_ms(end - start)
 
     def _cancel_stale_bindings(self) -> None:
         still_active = []
@@ -460,26 +663,64 @@ class Scheduler:
 
         start = wpilib.RobotController.get_time()
         done = False
+        fork_failure: ForkFailed | None = None
         error: BaseException | None = None
         with ec.mounted(state):
             try:
                 coroutine.send(None)
             except StopIteration:
                 done = True
+            except ForkFailed as e:
+                # Must precede CommandCancelled - ForkFailed subclasses it.
+                fork_failure = e
             except CommandCancelled:
                 done = True
             except Exception as e:  # noqa: BLE001 - deliberately broad, see below
                 error = e
         end = wpilib.RobotController.get_time()
-        state.set_last_runtime_ms((end - start) / 1000.0)
+        state.set_last_runtime_ms(_nanos_to_ms(end - start))
+
+        # Record that the coroutine is spent before any cancellation path
+        # below can try to throw into it. Set here rather than in each branch
+        # so it's also set on the frames a ForkFailed re-raise unwinds.
+        state.finished = done or error is not None or fork_failure is not None
 
         if error is not None:
             self._handle_command_exception(state, error)
             return
 
+        if fork_failure is not None:
+            if ec.current_state() is not None:
+                # This command was started from inside an ancestor's own run
+                # (a fork or await), so let the failure keep unwinding: it
+                # tears down each ancestor's frames the way any other
+                # cancellation would, and the outermost frame below does the
+                # bookkeeping once. Java instead clears its ancestry stack
+                # and cancels from here (`handleCoroutineIRQ`).
+                raise fork_failure
+            self._handle_fork_failure(state)
+            return
+
         if done:
             self._running_commands.pop(command, None)
             self._remove_orphaned_children(command)
+
+    def _handle_fork_failure(self, state: CommandState) -> None:
+        # A command couldn't fork a child, so the whole composition comes
+        # down - including the command that failed. Cancel from the root so
+        # every command in the composition runs its cancellation hooks; each
+        # coroutine has already terminated by now, so _cancel_coroutine()
+        # just absorbs the StopIteration.
+        self.cancel(self._root_of(state.command))
+
+    def _root_of(self, command: Command) -> Command:
+        """The outermost ancestor of ``command``, or ``command`` itself."""
+        root = command
+        parent = self.get_parent_of(root)
+        while parent is not None:
+            root = parent
+            parent = self.get_parent_of(parent)
+        return root
 
     def _handle_command_exception(
         self, state: CommandState, error: BaseException
@@ -488,9 +729,7 @@ class Scheduler:
 
         # Find the root ancestor before removing the failed command from the
         # running set, since get_parent_of() reads from that set.
-        root: Command | None = command
-        while root is not None and self.get_parent_of(root) is not None:
-            root = self.get_parent_of(root)
+        root = self._root_of(command)
 
         self._running_commands.pop(command, None)
         self._remove_orphaned_children(command)
@@ -540,12 +779,12 @@ class Scheduler:
         state = self._running_commands.get(command)
         return state.parent if state is not None else None
 
-    def last_command_runtime_ms(self, command: Command) -> float:
+    def last_command_runtime_ms(self, command: Command) -> wpimath.units.milliseconds:
         """How long ``command`` took to run its last tick, in milliseconds, or ``-1`` if it isn't running."""
         state = self._running_commands.get(command)
         return state.last_runtime_ms if state is not None else -1.0
 
-    def total_runtime_ms(self, command: Command) -> float:
+    def total_runtime_ms(self, command: Command) -> wpimath.units.milliseconds:
         """How long ``command`` has run in total since it was last scheduled, or ``-1`` if it isn't running."""
         state = self._running_commands.get(command)
         return state.total_runtime_ms if state is not None else -1.0
@@ -560,7 +799,7 @@ class Scheduler:
             return state.id
         return 0
 
-    def last_runtime_ms(self) -> float:
+    def last_runtime_ms(self) -> wpimath.units.milliseconds:
         """How long the most recent call to ``run()`` took, in milliseconds."""
         return self._last_run_time_ms
 
@@ -581,6 +820,7 @@ class CommandState:
         "binding",
         "command",
         "coroutine",
+        "finished",
         "id",
         "last_runtime_ms",
         "parent",
@@ -603,14 +843,17 @@ class CommandState:
         self.coroutine = coroutine
         self.scheduler = scheduler
         self.binding = binding
-        self.last_runtime_ms: float = -1.0
-        self.total_runtime_ms: float = 0.0
+        self.last_runtime_ms: wpimath.units.milliseconds = -1.0
+        self.total_runtime_ms: wpimath.units.milliseconds = 0.0
+        #: Whether the coroutine has terminated on its own, and so must not
+        #: be thrown into again.
+        self.finished = False
 
         # Not thread-safe - fine, since the framework is single-threaded only.
         CommandState._last_id += 1
         self.id = CommandState._last_id
 
-    def set_last_runtime_ms(self, last_runtime_ms: float) -> None:
+    def set_last_runtime_ms(self, last_runtime_ms: wpimath.units.milliseconds) -> None:
         """Records how long the most recent tick took, adding it to the running total."""
         self.last_runtime_ms = last_runtime_ms
         self.total_runtime_ms += last_runtime_ms

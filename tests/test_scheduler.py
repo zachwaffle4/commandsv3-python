@@ -6,10 +6,12 @@ import hal
 import pytest
 
 from commands3 import (
+    AlreadyRunning,
     Command,
+    LowerPriorityThanRunningCommand,
     Mechanism,
     Scheduler,
-    ScheduleResult,
+    Success,
     all_of,
     any_of,
     await_,
@@ -47,7 +49,7 @@ def test_schedule_starts_queued_then_promoted_on_run(scheduler):
 
     result = scheduler.schedule(command)
 
-    assert result == ScheduleResult.SUCCESS
+    assert result == Success(command)
     assert scheduler.is_scheduled(command)
     assert not scheduler.is_running(command)
 
@@ -64,7 +66,7 @@ def test_schedule_already_running_is_rejected(scheduler):
     scheduler.schedule(command)
     scheduler.run()
 
-    assert scheduler.schedule(command) == ScheduleResult.ALREADY_RUNNING
+    assert scheduler.schedule(command) == AlreadyRunning(command)
 
 
 def test_one_shot_command_completes_within_a_single_run(scheduler):
@@ -91,7 +93,7 @@ def test_lower_priority_conflicting_command_is_rejected(scheduler):
     lower = _forever(m).with_priority(1).named("Lower")
     result = scheduler.schedule(lower)
 
-    assert result == ScheduleResult.LOWER_PRIORITY_THAN_RUNNING_COMMAND
+    assert result == LowerPriorityThanRunningCommand(lower, running)
     assert scheduler.is_running(running)
     assert not scheduler.is_scheduled_or_running(lower)
 
@@ -112,7 +114,7 @@ def test_equal_or_higher_priority_conflicting_command_evicts_running_one(schedul
     result = scheduler.schedule(high)
     scheduler.run()
 
-    assert result == ScheduleResult.SUCCESS
+    assert result == Success(high)
     assert not scheduler.is_running(low)
     assert scheduler.is_running(high)
     assert canceled == ["low"]

@@ -65,6 +65,10 @@ class BindingType(enum.Enum):
     #: completes or is interrupted.
     SCHEDULE_ON_FALLING_EDGE = enum.auto()
 
+    #: Attempts to schedule (fork) a command on every poll where the signal
+    #: is high. Runs until it completes or is interrupted.
+    SCHEDULE_WHILE_HIGH = enum.auto()
+
     #: Schedules (forks) a command on a rising edge signal; canceled on the
     #: next rising edge if still running, otherwise scheduled again.
     TOGGLE_ON_RISING_EDGE = enum.auto()
