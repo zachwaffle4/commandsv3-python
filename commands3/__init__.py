@@ -2,15 +2,22 @@
 # Open Source Software; you can modify and/or share it under the terms of
 # the WPILib BSD license file in the root directory of this project.
 
-from . import opmode_fetcher
+from . import robot_state_fetcher
 from .binding import (
+    AUTONOMOUS_MODE_SCOPE,
     GLOBAL_SCOPE,
+    TELEOP_MODE_SCOPE,
+    UTILITY_MODE_SCOPE,
+    AutonomousMode,
     Binding,
     BindingScope,
     BindingType,
     ForCommand,
-    ForOpMode,
+    ForOpmode,
     GlobalScope,
+    RobotModeScope,
+    TeleopMode,
+    UtilityMode,
     create_narrowest_scope,
 )
 from .command import (
@@ -25,13 +32,6 @@ from .command import (
     no_requirements,
     requiring,
 )
-from .command_opmode import CommandOpMode
-from .command_opmodes import (
-    create_auto_opmode,
-    create_teleop_opmode,
-    create_utility_opmode,
-)
-from .command_robot import CommandRobot
 from .conflict_detector import Conflict, find_all_conflicts, throw_if_conflicts
 from .coroutine import (
     all_of,
@@ -46,56 +46,56 @@ from .coroutine import (
 from .event_loop import EventLoop
 from .exceptions import CommandCancelled, failing_command
 from .mechanism import Mechanism, requires_self
-from .opmode_triggers import OpModeTriggers
 from .parallel_group import ParallelGroupBuilder
 from .scheduler import CommandState, Scheduler, ScheduleResult
 from .sequential_group import SequentialGroupBuilder
 from .trigger import Trigger
 
 __all__ = [
+    "AUTONOMOUS_MODE_SCOPE",
     "DEFAULT_PRIORITY",
     "GLOBAL_SCOPE",
     "HIGHEST_PRIORITY",
     "LOWEST_PRIORITY",
+    "TELEOP_MODE_SCOPE",
+    "UTILITY_MODE_SCOPE",
+    "AutonomousMode",
     "Binding",
     "BindingScope",
     "BindingType",
     "Command",
     "CommandBody",
     "CommandCancelled",
-    "CommandOpMode",
-    "CommandRobot",
     "CommandState",
     "Conflict",
     "EventLoop",
     "ForCommand",
-    "ForOpMode",
+    "ForOpmode",
     "GlobalScope",
     "Mechanism",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
-    "OpModeTriggers",
     "ParallelGroupBuilder",
+    "RobotModeScope",
     "ScheduleResult",
     "Scheduler",
     "SequentialGroupBuilder",
     "StagedCommandBuilder",
+    "TeleopMode",
     "Trigger",
+    "UtilityMode",
     "all_of",
     "any_of",
     "await_",
-    "create_auto_opmode",
     "create_narrowest_scope",
-    "create_teleop_opmode",
-    "create_utility_opmode",
     "failing_command",
     "find_all_conflicts",
     "fork",
     "no_requirements",
-    "opmode_fetcher",
     "park",
     "requires_self",
     "requiring",
+    "robot_state_fetcher",
     "throw_if_conflicts",
     "wait",
     "wait_until",

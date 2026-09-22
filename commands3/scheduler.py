@@ -21,7 +21,6 @@ import wpilib
 from . import (
     BindingType,
     ForCommand,
-    ForOpMode,
     create_narrowest_scope,
 )
 from . import (
@@ -126,71 +125,22 @@ class Scheduler:
         _require_valid_default_command(mechanism, default_command)
 
         current_command = ec.current_command()
-        scope = create_narrowest_scope(self)
-        self._add_default_command_binding(
-            mechanism, default_command, current_command, scope
-        )
-
-    def set_default_command_for_opmode(
-        self, opmode_name: str, mechanism: Mechanism, default_command: Command
-    ) -> None:
-        """
-        Like ``set_default_command()``, but explicitly scoped to the named
-        opmode rather than the narrowest currently-active scope - useful for
-        configuring an opmode's defaults before it's ever been selected.
-        """
-        _require_valid_default_command(mechanism, default_command)
-
-        current_command = ec.current_command()
-        scope = ForOpMode(opmode_name)
-        self._add_default_command_binding(
-            mechanism, default_command, current_command, scope
-        )
-
-    def _add_default_command_binding(
-        self,
-        mechanism: Mechanism,
-        default_command: Command,
-        current_command: Command | None,
-        scope,
-    ) -> None:
         binding = Binding(
-            scope, BindingType.CONTINUOUSLY_SCHEDULE_WHILE_HIGH, default_command
+            create_narrowest_scope(self),
+            BindingType.CONTINUOUSLY_SCHEDULE_WHILE_HIGH,
+            default_command,
         )
         current_default = self.get_default_command_for(mechanism)
 
         self._default_command_bindings.setdefault(mechanism, []).append(binding)
 
         if current_command is not None and current_command is not current_default:
+            # User called set_default_command() inside another command.
             # Keep this mechanism in sync with the rest of the scheduler
             # right away instead of waiting for the next run() to pick up
-            # the new default command.
-            self._process_default_command(mechanism)
-
-    def remove_default_command(self, opmode_name: str, mechanism: Mechanism) -> None:
-        """Removes the default command that was scoped to ``opmode_name`` for ``mechanism``."""
-        bindings = self._default_command_bindings.get(mechanism)
-        if not bindings:
-            return
-
-        removed = False
-        remaining = []
-        for binding in bindings:
-            if (
-                isinstance(binding.scope, ForOpMode)
-                and binding.scope.opmode_name == opmode_name
-            ):
-                if ec.current_command() is binding.command:
-                    # Can't cancel while mounted; leave the rest alone too.
-                    return
-                self.cancel(binding.command)
-                removed = True
-                continue
-            remaining.append(binding)
-
-        self._default_command_bindings[mechanism] = remaining
-
-        if removed:
+            # the new default command. We can't do this if the current
+            # default command is the caller, since commands cannot be
+            # canceled while mounted.
             self._process_default_command(mechanism)
 
     def get_default_command_for(self, mechanism: Mechanism) -> Command | None:
@@ -209,27 +159,24 @@ class Scheduler:
         if not bindings:
             return
 
-        # Cancel (and, for transient ForCommand bindings, drop) any bindings
-        # whose scope has gone inactive. ForOpMode bindings are persistent -
-        # only canceled, not removed - so they reactivate when their opmode
-        # is selected again.
+        # Remove default command bindings that are no longer active. If a
+        # default command is running when its scope goes inactive, cancel it
+        # too.
         remaining = []
         for binding in bindings:
             if not binding.scope.active():
                 self.cancel(binding.command)
-                if isinstance(binding.scope, ForCommand):
-                    continue
+                continue
             remaining.append(binding)
         self._default_command_bindings[mechanism] = remaining
         bindings = remaining
 
-        active_bindings = [b for b in bindings if b.scope.active()]
-        if not active_bindings:
+        if not bindings:
             return
 
         # Cancel every default command except the narrowest-scoped one (the
         # last binding in the list).
-        for binding in active_bindings[:-1]:
+        for binding in bindings[:-1]:
             self.cancel(binding.command)
 
         for command in self._running_commands:
@@ -239,7 +186,7 @@ class Scheduler:
             if state.command.requires(mechanism):
                 return
 
-        self.schedule(active_bindings[-1].command)
+        self.schedule(bindings[-1].command)
 
     # -- Scheduling --------------------------------------------------------
 

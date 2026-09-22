@@ -2,10 +2,18 @@
 # Open Source Software; you can modify and/or share it under the terms of
 # the WPILib BSD license file in the root directory of this project.
 
+import hal
 import pytest
 from wpilib import simulation
 
 from commands3 import Command, Mechanism, Scheduler, Trigger, yield_
+
+#: Every robot mode that maps to a dedicated binding scope.
+CONCRETE_ROBOT_MODES = [
+    hal.RobotMode.AUTONOMOUS,
+    hal.RobotMode.TELEOPERATED,
+    hal.RobotMode.UTILITY,
+]
 
 
 class DummyMechanism(Mechanism):
@@ -263,3 +271,92 @@ def test_trigger_created_inside_a_command_unbinds_when_it_stops(scheduler):
 
     assert not scheduler.is_running(bound_command)
     assert not captured["trigger"].is_scope_active()
+
+
+def test_binding_scopes_to_opmode_if_available(scheduler, fake_fetcher):
+    fake_fetcher.opmode_id = 12345
+    fake_fetcher.opmode_name = "This is an opmode!"
+    signal = {"value": False}
+    trigger = Trigger(lambda: signal["value"], scheduler)
+    command = _forever(DummyMechanism())
+    trigger.while_true(command)
+
+    signal["value"] = True
+    scheduler.run()
+    assert scheduler.is_running(command), "Command should have started when triggered"
+
+    fake_fetcher.opmode_id = 0
+    fake_fetcher.opmode_name = ""
+    scheduler.run()
+    assert not scheduler.is_running(command), (
+        "Command should have stopped when opmode exited"
+    )
+
+
+@pytest.mark.parametrize("mode", CONCRETE_ROBOT_MODES)
+def test_binding_scopes_to_robot_mode_if_available(scheduler, fake_fetcher, mode):
+    fake_fetcher.robot_mode = mode
+    signal = {"value": False}
+    trigger = Trigger(lambda: signal["value"], scheduler)
+    command = _forever(DummyMechanism())
+    trigger.while_true(command)
+
+    signal["value"] = True
+    scheduler.run()
+    assert scheduler.is_running(command), "Command should have started when triggered"
+
+    fake_fetcher.robot_mode = hal.RobotMode.UNKNOWN
+    scheduler.run()
+    assert not scheduler.is_running(command), (
+        "Command should have stopped when robot mode exited"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_mode", "destination_mode"),
+    [
+        (source, destination)
+        for source in CONCRETE_ROBOT_MODES
+        for destination in CONCRETE_ROBOT_MODES
+        if source is not destination
+    ],
+)
+def test_trigger_created_in_one_mode_survives_transition_to_another(
+    scheduler, fake_fetcher, source_mode, destination_mode
+):
+    # Trigger *objects* are globally scoped even when created in a robot
+    # mode, so a trigger cached across a mode change can still be rebound.
+    fake_fetcher.robot_mode = source_mode
+    signal = {"value": False}
+    trigger = Trigger(lambda: signal["value"], scheduler)
+
+    source_command = _forever(DummyMechanism("source"))
+    trigger.while_true(source_command)
+
+    signal["value"] = True
+    scheduler.run()
+    assert scheduler.is_running(source_command)
+
+    fake_fetcher.robot_mode = destination_mode
+    scheduler.run()
+    assert not scheduler.is_running(source_command), (
+        "Source mode binding should be inactive after the transition"
+    )
+
+    signal["value"] = False
+    scheduler.run()
+
+    destination_command = _forever(DummyMechanism("destination"))
+    trigger.while_true(destination_command)
+
+    signal["value"] = True
+    scheduler.run()
+    assert scheduler.is_running(destination_command), (
+        "Trigger should still be active after the transition"
+    )
+
+    signal["value"] = False
+    scheduler.run()
+    assert not scheduler.is_running(destination_command), (
+        "Destination mode command should cancel on the falling edge"
+    )

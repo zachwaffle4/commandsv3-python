@@ -104,9 +104,12 @@ plain boolean-returning callables for now.)
 - **`Trigger`** - starts, stops, or toggles commands based on a boolean
   condition (`on_true`, `while_true`, `toggle_on_true`, etc), composable
   with `.and_()`/`.or_()`/`.negate()`.
-- **`CommandRobot`/`CommandOpModes`/`OpModeTriggers`** - integration with
-  WPILib's OpMode model: register command-based opmodes and get triggers
-  for when they're selected, enabled, or disabled.
+- **`commands3.button`** - trigger factories for robot state, currently
+  `autonomous()`/`teleop()`/`disabled()`/`utility()`. There is no
+  command-specific robot base class: extend `wpilib.OpModeRobot` directly
+  and call `Scheduler.get_default().run()` from `robot_periodic()`.
+  Bindings created while an opmode or robot mode is active are
+  automatically scoped to it and torn down when it exits.
 - **`yield_()`/`wait()`/`wait_until()`/`fork()`/`await_()`** - the
   coroutine primitives used inside a command's body to yield control, pause,
   and compose with other commands.

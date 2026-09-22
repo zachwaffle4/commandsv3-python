@@ -2,42 +2,34 @@
 # Open Source Software; you can modify and/or share it under the terms of
 # the WPILib BSD license file in the root directory of this project.
 
+import hal
 import pytest
 
 from commands3 import (
+    AUTONOMOUS_MODE_SCOPE,
     GLOBAL_SCOPE,
+    TELEOP_MODE_SCOPE,
+    UTILITY_MODE_SCOPE,
     Command,
     ForCommand,
-    ForOpMode,
+    ForOpmode,
     Mechanism,
+    RobotModeScope,
     Scheduler,
     create_narrowest_scope,
-    opmode_fetcher,
     yield_,
 )
+
+#: Every robot mode that maps to a dedicated scope, and the scope it maps to.
+MODE_SCOPES = [
+    (hal.RobotMode.AUTONOMOUS, AUTONOMOUS_MODE_SCOPE),
+    (hal.RobotMode.TELEOPERATED, TELEOP_MODE_SCOPE),
+    (hal.RobotMode.UTILITY, UTILITY_MODE_SCOPE),
+]
 
 
 class DummyMechanism(Mechanism):
     pass
-
-
-class FakeOpModeFetcher(opmode_fetcher.OpModeFetcher):
-    def __init__(self, name: str = ""):
-        self.name = name
-
-    def get_opmode_id(self) -> int:
-        return 0
-
-    def get_opmode_name(self) -> str:
-        return self.name
-
-
-@pytest.fixture
-def fake_fetcher():
-    fetcher = FakeOpModeFetcher()
-    opmode_fetcher.set_fetcher(fetcher)
-    yield fetcher
-    opmode_fetcher.set_fetcher(None)
 
 
 @pytest.fixture
@@ -70,21 +62,30 @@ def test_for_command_scope_tracks_whether_the_command_is_running(scheduler):
 
 
 def test_for_opmode_scope_tracks_the_fetcher(fake_fetcher):
-    scope = ForOpMode("Autonomous")
+    scope = ForOpmode(12345)
 
     assert not scope.active()
 
-    fake_fetcher.name = "Autonomous"
+    fake_fetcher.opmode_id = 12345
     assert scope.active()
 
-    fake_fetcher.name = "Teleop"
+    fake_fetcher.opmode_id = 54321
     assert not scope.active()
+
+
+@pytest.mark.parametrize(("mode", "scope"), MODE_SCOPES)
+def test_robot_mode_scope_tracks_the_fetcher(fake_fetcher, mode, scope):
+    fake_fetcher.robot_mode = hal.RobotMode.UNKNOWN
+    assert not scope.active()
+
+    fake_fetcher.robot_mode = mode
+    assert scope.active()
 
 
 def test_create_narrowest_scope_prefers_running_command_over_opmode(
     scheduler, fake_fetcher
 ):
-    fake_fetcher.name = "Autonomous"
+    fake_fetcher.opmode_id = 12345
     m = DummyMechanism()
     captured = {}
 
@@ -100,19 +101,31 @@ def test_create_narrowest_scope_prefers_running_command_over_opmode(
     assert captured["scope"].command is command
 
 
-def test_create_narrowest_scope_uses_opmode_when_no_command_running(
-    scheduler, fake_fetcher
-):
-    fake_fetcher.name = "Autonomous"
+def test_create_narrowest_scope_prefers_opmode_over_robot_mode(scheduler, fake_fetcher):
+    fake_fetcher.opmode_id = 12345
+    fake_fetcher.robot_mode = hal.RobotMode.AUTONOMOUS
 
     scope = create_narrowest_scope(scheduler)
 
-    assert isinstance(scope, ForOpMode)
-    assert scope.opmode_name == "Autonomous"
+    assert isinstance(scope, ForOpmode)
+    assert scope.opmode_id == 12345
+
+
+@pytest.mark.parametrize(("mode", "expected"), MODE_SCOPES)
+def test_create_narrowest_scope_uses_robot_mode_when_no_opmode(
+    scheduler, fake_fetcher, mode, expected
+):
+    fake_fetcher.robot_mode = mode
+
+    scope = create_narrowest_scope(scheduler)
+
+    assert isinstance(scope, RobotModeScope)
+    assert scope is expected
 
 
 def test_create_narrowest_scope_uses_global_when_neither(scheduler, fake_fetcher):
-    fake_fetcher.name = ""
+    fake_fetcher.opmode_id = 0
+    fake_fetcher.robot_mode = hal.RobotMode.UNKNOWN
 
     scope = create_narrowest_scope(scheduler)
 

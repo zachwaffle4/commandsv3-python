@@ -25,7 +25,13 @@ import wpilib
 import wpimath
 import wpimath.units
 
-from . import BindingScope, BindingType, create_narrowest_scope
+from . import (
+    GLOBAL_SCOPE,
+    BindingScope,
+    BindingType,
+    RobotModeScope,
+    create_narrowest_scope,
+)
 from .binding import Binding
 from .event_loop import EventLoop
 
@@ -76,7 +82,19 @@ class Trigger:
         self._cached_signal: _Signal | None = None
         self._bindings: dict[BindingType, list[Binding]] = collections.defaultdict(list)
         self._bound = True
-        self._creation_scope: BindingScope = create_narrowest_scope(scheduler)
+        # Treat robot mode scopes as globals for the purposes of trigger
+        # object lifetimes. Any bindings made to the trigger will still use
+        # the appropriate scopes, but this prevents bugs where a trigger
+        # created in e.g. an autonomous init and cached, then later rebound
+        # during teleop, would get removed from the scheduler *after* the
+        # new binding was added, since init functions run before the
+        # periodic loop. This does open the possibility for these triggers
+        # to never be cleaned up, but robot mode changes are so infrequent
+        # that it's not a big deal.
+        creation_scope = create_narrowest_scope(scheduler)
+        if isinstance(creation_scope, RobotModeScope):
+            creation_scope = GLOBAL_SCOPE
+        self._creation_scope: BindingScope = creation_scope
 
         scheduler._add_bound_trigger(self)
         self._loop.bind(self._poll)

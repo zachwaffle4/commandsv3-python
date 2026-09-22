@@ -2,6 +2,7 @@
 # Open Source Software; you can modify and/or share it under the terms of
 # the WPILib BSD license file in the root directory of this project.
 
+import hal
 import pytest
 
 from commands3 import (
@@ -14,29 +15,9 @@ from commands3 import (
     await_,
     failing_command,
     fork,
-    opmode_fetcher,
     yield_,
 )
 from commands3 import execution_context as ec
-
-
-class FakeOpModeFetcher(opmode_fetcher.OpModeFetcher):
-    def __init__(self, name: str = ""):
-        self.name = name
-
-    def get_opmode_id(self) -> int:
-        return 0
-
-    def get_opmode_name(self) -> str:
-        return self.name
-
-
-@pytest.fixture
-def fake_fetcher():
-    fetcher = FakeOpModeFetcher()
-    opmode_fetcher.set_fetcher(fetcher)
-    yield fetcher
-    opmode_fetcher.set_fetcher(None)
 
 
 class DummyMechanism(Mechanism):
@@ -485,57 +466,50 @@ def test_default_command_set_inside_a_running_command_is_scoped_to_it(scheduler)
     assert not scheduler.is_running(scoped_default)
 
 
-def test_default_command_scoped_to_opmode_only_runs_while_selected(
+def test_default_command_set_in_an_opmode_is_dropped_when_the_opmode_exits(
     scheduler, fake_fetcher
 ):
+    fake_fetcher.opmode_id = 12345
     m = DummyMechanism()
-    ran = []
 
     async def default_body():
         while True:
-            ran.append(True)
             await yield_()
 
     default_command = Command.requiring(m).executing(default_body).named("AutoDefault")
-    scheduler.set_default_command_for_opmode("Autonomous", m, default_command)
+    scheduler.set_default_command(m, default_command)
 
-    fake_fetcher.name = "Teleop"
-    scheduler.run()
-    assert not scheduler.is_running(default_command)
-
-    fake_fetcher.name = "Autonomous"
     scheduler.run()
     assert scheduler.is_running(default_command)
 
-    fake_fetcher.name = "Teleop"
+    fake_fetcher.opmode_id = 0
     scheduler.run()
-    assert not scheduler.is_running(default_command)
-
-
-def test_remove_default_command_drops_the_opmode_scoped_binding(
-    scheduler, fake_fetcher
-):
-    m = DummyMechanism()
-    ran = []
-
-    async def default_body():
-        while True:
-            ran.append(True)
-            await yield_()
-
-    default_command = Command.requiring(m).executing(default_body).named("AutoDefault")
-    scheduler.set_default_command_for_opmode("Autonomous", m, default_command)
-    fake_fetcher.name = "Autonomous"
-    scheduler.run()
-    assert scheduler.is_running(default_command)
-
-    scheduler.remove_default_command("Autonomous", m)
-
     assert not scheduler.is_running(default_command)
     assert scheduler.get_default_command_for(m) is None
 
+
+def test_default_command_set_in_a_robot_mode_is_dropped_when_the_mode_exits(
+    scheduler, fake_fetcher
+):
+    fake_fetcher.robot_mode = hal.RobotMode.TELEOPERATED
+    m = DummyMechanism()
+
+    async def default_body():
+        while True:
+            await yield_()
+
+    default_command = (
+        Command.requiring(m).executing(default_body).named("TeleopDefault")
+    )
+    scheduler.set_default_command(m, default_command)
+
+    scheduler.run()
+    assert scheduler.is_running(default_command)
+
+    fake_fetcher.robot_mode = hal.RobotMode.AUTONOMOUS
     scheduler.run()
     assert not scheduler.is_running(default_command)
+    assert scheduler.get_default_command_for(m) is None
 
 
 def test_exception_is_attributed_to_the_command_that_raised_it(scheduler):
