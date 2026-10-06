@@ -15,6 +15,11 @@ class Light(cmd3.Mechanism):
         super().__init__("Light")
         self._output = wpilib.DigitalOutput(1)
 
+    def controllable_during_disabled(self) -> bool:
+        # An LED can't hurt anyone, so let it keep blinking while the robot
+        # is disabled. Mechanisms that move stay off-limits by default.
+        return True
+
     @requires_self()
     async def blink(self) -> None:
         while True:

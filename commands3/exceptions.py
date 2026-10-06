@@ -47,9 +47,6 @@ class ForkFailed(CommandCancelled):
     runs its cancellation hooks. Pass ``cancel_on_failure=False`` to get a
     ``ForkResult`` back instead and handle the failure in the command body.
 
-    Java has no equivalent exception: it sets a flag, yields, and lets the
-    scheduler notice after the yield (see DIVERGENCES.md #8).
-
     :ivar result: the fork result describing which commands failed and why.
     """
 

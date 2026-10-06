@@ -54,6 +54,7 @@ class Robot(wpilib.OpModeRobot):
 @teleop
 class TeleopOpMode(OpMode):
     def __init__(self, robot: Robot) -> None:
+        super().__init__()
         self.robot = robot
 
     def start(self) -> None:

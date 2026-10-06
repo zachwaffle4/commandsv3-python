@@ -3,16 +3,12 @@
 # the WPILib BSD license file in the root directory of this project.
 
 """
-Priority inheritance and fork-failure behavior, ported from Java's
-``SchedulerPriorityLevelTests``.
+Priority inheritance and fork-failure behavior.
 
 The basic "higher priority evicts, lower priority is rejected" cases live in
-``test_scheduler.py``; this file covers what #9207 added - a command's
-*effective* priority being the highest in its scheduling hierarchy, and
-fork/await becoming all-or-nothing.
-
-Assertions on ``SchedulerEvent`` in the Java originals are omitted until the
-event listener mechanism is ported (see ``PORTING_PLAN.md`` phase 6).
+``test_scheduler.py``. This file covers a command's *effective* priority
+being the highest in its scheduling hierarchy, and fork/await being
+all-or-nothing.
 """
 
 import pytest
@@ -35,8 +31,8 @@ from commands3 import (
 
 class DummyMechanism(Mechanism):
     """
-    Like Java's ``DummyMechanism`` test helper, this can be pointed at a
-    specific scheduler. ``Mechanism.get_registered_scheduler()`` otherwise
+    A mechanism that can be pointed at a specific scheduler.
+    ``Mechanism.get_registered_scheduler()`` otherwise
     returns the shared default instance, so ``set_default_command()`` on a
     plain mechanism would bypass a test's isolated scheduler entirely.
     """
@@ -65,7 +61,7 @@ def _priority_command(priority: int, mechanism: Mechanism, name: str) -> Command
     )
 
 
-# -- Fork operations, parameterized the way Java parameterizes them ---------
+# -- Fork operations, parameterized -----------------------------------------
 #
 # Wrapped as async adapters with one uniform signature so the same test body
 # can drive fork (synchronous, variadic), await_ (single command), and
@@ -441,8 +437,8 @@ def test_fork_failure_raises_fork_failed_outside_a_composition(scheduler):
 def test_fork_cleanup_runs_on_fork_failure(scheduler):
     """
     Because fork failure unwinds the command as a cancellation rather than
-    abandoning its frames, ``try/finally`` cleanup still runs - consistent
-    with DIVERGENCES.md #1.
+    abandoning its frames, ``try/finally`` cleanup still runs, the same as
+    for any other cancellation.
     """
     mechanism = DummyMechanism()
 

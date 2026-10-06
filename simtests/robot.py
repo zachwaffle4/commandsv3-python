@@ -42,9 +42,15 @@ TELEOP_OPMODE_NAME = "SimTeleop"
 class Counter(cmd3.Mechanism):
     """A mechanism whose only job is to count ticks of the command running on it."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self, name: str, *, controllable_during_disabled: bool = False
+    ) -> None:
         super().__init__(name)
         self.ticks = 0
+        self._controllable_during_disabled = controllable_during_disabled
+
+    def controllable_during_disabled(self) -> bool:
+        return self._controllable_during_disabled
 
     def counting(self) -> cmd3.Command:
         async def body():
@@ -76,19 +82,22 @@ class Robot(wpilib.OpModeRobot):
         # robot built in the same process would inherit the first robot's
         # bindings and running commands. `robotpy test` defaults to
         # --isolated (a process per test), but reset anyway so the suite
-        # also passes under --no-isolation. commands2 gets this for free:
-        # the wpilib pytest plugin special-cases it and calls
-        # CommandScheduler.reset_instance() itself.
+        # also passes under --no-isolation. The wpilib pytest plugin doesn't
+        # know about this scheduler, so it won't reset it for us.
         cmd3.Scheduler._default_scheduler = cmd3.Scheduler()
 
-        # Driven by a default command, so it should run in every mode.
+        # Driven by a default command, so it should run in every enabled
+        # mode. It isn't controllable during disabled, so it stops then.
         self.elevator = Counter("Elevator")
 
-        # One per robot mode trigger factory.
+        # One per robot mode trigger factory. The disabled marker has to be
+        # controllable during disabled, or its command could never run.
         self.auto_marker = Counter("AutoMarker")
         self.teleop_marker = Counter("TeleopMarker")
         self.utility_marker = Counter("UtilityMarker")
-        self.disabled_marker = Counter("DisabledMarker")
+        self.disabled_marker = Counter(
+            "DisabledMarker", controllable_during_disabled=True
+        )
 
         # Driven by a trigger bound inside an opmode, so its binding should
         # be torn down when that opmode ends.

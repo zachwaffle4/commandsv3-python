@@ -17,6 +17,7 @@ from commands3 import (
     await_,
     failing_command,
     fork,
+    wait_until,
     yield_,
 )
 from commands3 import execution_context as ec
@@ -261,6 +262,55 @@ def test_await_blocks_until_child_completes(scheduler):
 
     assert order == ["child running", "parent resumed"]
     assert not scheduler.is_running(parent)
+
+
+def test_fork_result_await_completion(scheduler):
+    signal = False
+
+    async def waiting_body():
+        await wait_until(lambda: signal)
+
+    waiting_command = Command.no_requirements(waiting_body).named("Wait For Signal")
+
+    async def parent_body():
+        fork_result = fork(waiting_command)
+        await fork_result.await_completion()
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    assert scheduler.get_running_commands() == [parent, waiting_command]
+
+    # Run the scheduler a few times to ensure await_completion() continues to wait
+    scheduler.run()
+    scheduler.run()
+    scheduler.run()
+    scheduler.run()
+    assert scheduler.get_running_commands() == [parent, waiting_command]
+
+    signal = True
+    scheduler.run()
+    assert scheduler.get_running_commands() == []
+
+
+def test_fork_result_await_completion_one_shot(scheduler):
+    ran = False
+    one_shot = Command.no_requirements(_noop_body).named("OneShot")
+
+    async def parent_body():
+        nonlocal ran
+        fork_result = fork(one_shot)
+        assert fork_result.successful
+        await fork_result.await_completion()
+        ran = True
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    assert ran
+    assert scheduler.get_running_commands() == []
 
 
 def test_all_of_waits_for_every_command(scheduler):

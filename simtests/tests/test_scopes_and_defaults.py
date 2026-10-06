@@ -17,7 +17,7 @@ AUTO_OPMODE = OpMode(hal.RobotMode.AUTONOMOUS, AUTO_OPMODE_NAME)
 TELEOP_OPMODE = OpMode(hal.RobotMode.TELEOPERATED, TELEOP_OPMODE_NAME)
 
 
-def test_default_command_runs_in_every_mode(control, robot):
+def test_default_command_runs_in_every_enabled_mode(control, robot):
     with control.run_robot():
         control.step_timing(seconds=1, autonomous=True, enabled=True)
         after_auto = robot.elevator.ticks
@@ -25,6 +25,22 @@ def test_default_command_runs_in_every_mode(control, robot):
 
         control.step_timing(seconds=1, autonomous=False, enabled=True)
         assert robot.elevator.ticks > after_auto
+
+
+def test_uncontrollable_default_command_stops_while_disabled(control, robot):
+    # The real-driver-station counterpart to tests/test_scheduler_disabled.py:
+    # proves DriverStationRobotStateFetcher.is_enabled() is what the
+    # scheduler's disabled-mode handling actually reads.
+    with control.run_robot():
+        control.step_timing(seconds=1, autonomous=False, enabled=True)
+        ticks_while_enabled = robot.elevator.ticks
+        assert ticks_while_enabled > 0
+
+        control.step_timing(seconds=1, autonomous=False, enabled=False)
+        assert robot.elevator.ticks == ticks_while_enabled
+
+        control.step_timing(seconds=1, autonomous=False, enabled=True)
+        assert robot.elevator.ticks > ticks_while_enabled
 
 
 def test_binding_made_inside_an_opmode_runs_while_it_is_selected(control, robot):

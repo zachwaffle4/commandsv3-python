@@ -49,6 +49,20 @@ class Mechanism:
         """The scheduler this mechanism's commands and default command are registered with."""
         return Scheduler.get_default()
 
+    def controllable_during_disabled(self) -> bool:
+        """
+        Whether this mechanism can be controlled while the robot is disabled.
+
+        If not, commands that require it can't be scheduled while the robot
+        is disabled, and running ones are canceled (along with their whole
+        composition) when it becomes disabled. Its default command doesn't
+        run while disabled either.
+
+        Defaults to ``False``. Override to return ``True`` for mechanisms
+        that are safe to drive while disabled, such as LEDs.
+        """
+        return False
+
     def set_default_command(self, default_command: Command) -> None:
         """Sets the command to run whenever no other command is using this mechanism."""
         self.get_registered_scheduler().set_default_command(self, default_command)

@@ -3,9 +3,9 @@
 # the WPILib BSD license file in the root directory of this project.
 
 """
-Shared test fixtures. Mirrors Java's ``CommandTestBase``, which installs a
-fake ``RobotStateFetcher`` before every test so the suite never has to hook
-into driver station simulation or the HAL.
+Shared test fixtures. Installs a fake ``RobotStateFetcher`` before every
+test so the suite never has to hook into driver station simulation or the
+HAL.
 """
 
 import hal

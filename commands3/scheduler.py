@@ -6,9 +6,6 @@
 The ``Scheduler`` manages the lifecycle of every command: scheduling,
 running, canceling, resolving conflicts between commands that require the
 same mechanism, and driving default commands, triggers, and the event loop.
-
-Not yet implemented here: sideloaded periodic callbacks, protobuf
-telemetry, and the ``SchedulerEvent`` listener mechanism.
 """
 
 from __future__ import annotations
@@ -23,6 +20,7 @@ from . import (
     BindingType,
     ForCommand,
     create_narrowest_scope,
+    robot_state_fetcher,
 )
 from . import (
     execution_context as ec,
@@ -45,6 +43,7 @@ __all__ = [
     "FailedScheduleResult",
     "LowerPriorityThanQueuedCommand",
     "LowerPriorityThanRunningCommand",
+    "RequiresUnsafeMechanisms",
     "ScheduleResult",
     "Scheduler",
     "Success",
@@ -53,17 +52,13 @@ __all__ = [
 
 
 def _nanos_to_ms(nanos: wpimath.units.nanoseconds) -> wpimath.units.milliseconds:
-    # wpilib.RobotController.get_time() reports nanoseconds (upstream
-    # c65465b004 switched wpiutil's integer timestamps over), while the
-    # scheduler reports milliseconds, matching Java's
-    # Milliseconds.convertFrom(delta, Nanoseconds).
+    # wpilib.RobotController.get_time() reports nanoseconds, while the
+    # scheduler reports milliseconds.
     #
     # The wpimath.units names are documentation, not enforcement - they're
-    # aliases for `float` (see wpimath/units.py), the same way robotpy erases
-    # C++ `units::second_t` to a plain float at the binding boundary. Java's
-    # Measure<TimeUnit> safety has no counterpart here, so this one function
-    # is the only place the conversion factor appears, and
-    # tests/test_scheduler_timing.py pins it.
+    # aliases for `float` (see wpimath/units.py), so nothing catches a
+    # mixed-up unit. This one function is the only place the conversion
+    # factor appears, and tests/test_scheduler_timing.py pins it.
     return nanos / 1_000_000.0
 
 
@@ -85,18 +80,17 @@ class ScheduleResult(abc.ABC):
     by ``Scheduler.schedule()`` and as a prediction by
     ``Scheduler.is_schedulable()``.
 
-    Java nests these inside ``Scheduler`` as a sealed interface; here they're
-    module-level classes, since ``coroutine.py`` also needs to name the
-    failure types when reporting a fork failure.
+    These are module-level classes rather than nested in ``Scheduler``,
+    since ``coroutine.py`` also needs to name the failure types when
+    reporting a fork failure.
 
     **This hierarchy is closed.** Do not subclass ``ScheduleResult``,
     ``SuccessfulScheduleResult``, or ``FailedScheduleResult`` outside this
     module - only the scheduler produces these, and code that consumes them
     is entitled to assume the set of concrete types is exactly the ones
-    defined here (the same guarantee Java gets from ``sealed``, which Python
-    can't enforce). Subclass them at your own risk: a future result type
-    added upstream may collide, and ``isinstance`` checks elsewhere in the
-    framework won't know about yours.
+    defined here. Python can't enforce that, so subclass them at your own
+    risk: a result type added to the framework later may collide, and
+    ``isinstance`` checks elsewhere in the framework won't know about yours.
 
     :ivar command: the command that was (or would be) scheduled.
     """
@@ -170,6 +164,28 @@ class LowerPriorityThanQueuedCommand(FailedScheduleResult):
     """
 
     queued_command: Command
+
+
+@dataclass(frozen=True)
+class RequiresUnsafeMechanisms(FailedScheduleResult):
+    """
+    The robot is disabled and the command requires one or more mechanisms
+    that aren't controllable during disabled (see
+    ``Mechanism.controllable_during_disabled()``).
+
+    :ivar unsafe_mechanisms: the required mechanisms that aren't controllable.
+    """
+
+    unsafe_mechanisms: frozenset[Mechanism]
+
+
+def _unsafe_mechanisms(command: Command) -> frozenset[Mechanism]:
+    # The mechanisms `command` requires that can't run while disabled.
+    return frozenset(
+        mechanism
+        for mechanism in command.requirements
+        if not mechanism.controllable_during_disabled()
+    )
 
 
 class Scheduler:
@@ -288,6 +304,14 @@ class Scheduler:
         for binding in bindings[:-1]:
             self.cancel(binding.command)
 
+        if (
+            not robot_state_fetcher.get_fetcher().is_enabled()
+            and not mechanism.controllable_during_disabled()
+        ):
+            # The default command can't be scheduled right now anyway, so
+            # don't bother trying.
+            return
+
         for command in self._running_commands:
             if command.requires(mechanism):
                 return
@@ -324,12 +348,17 @@ class Scheduler:
         of them.
 
         :return: ``AlreadyRunning`` if it's already scheduled or running,
+            ``RequiresUnsafeMechanisms`` if the robot is disabled and it
+            requires a mechanism that isn't controllable during disabled,
             ``LowerPriorityThanRunningCommand`` or
             ``LowerPriorityThanQueuedCommand`` if a conflicting command of a
             higher effective priority blocks it, else ``Success``.
         """
         if self.is_scheduled_or_running(command):
             return AlreadyRunning(command)
+
+        if (unsafe := self._requires_unsafe_mechanisms(command)) is not None:
+            return unsafe
 
         return self._is_schedulable_from_priority(
             command, self._ancestry_of(ec.current_state())
@@ -344,12 +373,26 @@ class Scheduler:
         if self.is_scheduled_or_running(command):
             return AlreadyRunning(command)
 
+        if (unsafe := self._requires_unsafe_mechanisms(command)) is not None:
+            return unsafe
+
         if isinstance(binding.scope, ForCommand):
             start = self._running_commands.get(binding.scope.command)
         else:
             start = ec.current_state()
 
         return self._is_schedulable_from_priority(command, self._ancestry_of(start))
+
+    @staticmethod
+    def _requires_unsafe_mechanisms(
+        command: Command,
+    ) -> RequiresUnsafeMechanisms | None:
+        if robot_state_fetcher.get_fetcher().is_enabled():
+            return None
+        unsafe = _unsafe_mechanisms(command)
+        if not unsafe:
+            return None
+        return RequiresUnsafeMechanisms(command, unsafe)
 
     def _ancestry_of(self, state: CommandState | None) -> set[Command]:
         # The command in `state` plus every command it descends from.
@@ -458,8 +501,7 @@ class Scheduler:
             max_priority = max(max_priority, parent.priority)
             parent_state = self._running_commands.get(parent)
             if parent_state is None:
-                # Parent is no longer running, so the chain stops here. Java
-                # has no such guard and would throw an NPE.
+                # Parent is no longer running, so the chain stops here.
                 break
             parent = parent_state.parent
         return max_priority
@@ -590,8 +632,9 @@ class Scheduler:
     def run(self) -> None:
         """
         Advances the scheduler by one tick. In order: cancels commands and
-        unbinds triggers whose scope has gone inactive, polls the event
-        loop (running triggers and scheduling/canceling bound commands),
+        unbinds triggers whose scope has gone inactive, cancels commands
+        that can't run while the robot is disabled (if it is), polls the
+        event loop (running triggers and scheduling/canceling bound commands),
         schedules default commands for idle mechanisms, promotes queued
         commands to running, then runs every running command until it
         yields or completes.
@@ -602,6 +645,7 @@ class Scheduler:
 
         self._cancel_stale_bindings()
         self._unbind_stale_triggers()
+        self._cancel_commands_that_cannot_run_in_disabled()
         self._event_loop.poll()
         self._schedule_default_commands()
         self._promote_scheduled_commands()
@@ -627,6 +671,27 @@ class Scheduler:
                 continue
             trigger.unbind()
         self._bound_triggers = still_bound
+
+    def _cancel_commands_that_cannot_run_in_disabled(self) -> None:
+        if robot_state_fetcher.get_fetcher().is_enabled():
+            return
+
+        # A running command takes its whole composition down with it, so
+        # cancel from its root. Queued commands haven't started, so they
+        # don't have a composition yet.
+        to_cancel = [
+            self._root_of(command)
+            for command in self._running_commands
+            if _unsafe_mechanisms(command)
+        ]
+        to_cancel.extend(
+            command for command in self._queued_to_run if _unsafe_mechanisms(command)
+        )
+
+        for command in to_cancel:
+            # Canceling one root can cancel another entry in the list along
+            # with it; cancel() is a no-op for those.
+            self.cancel(command)
 
     def get_default_event_loop(self) -> EventLoop:
         """The event loop this scheduler polls on every ``run()`` to update and fire triggers."""
@@ -695,8 +760,7 @@ class Scheduler:
                 # (a fork or await), so let the failure keep unwinding: it
                 # tears down each ancestor's frames the way any other
                 # cancellation would, and the outermost frame below does the
-                # bookkeeping once. Java instead clears its ancestry stack
-                # and cancels from here (`handleCoroutineIRQ`).
+                # bookkeeping once.
                 raise fork_failure
             self._handle_fork_failure(state)
             return
@@ -736,9 +800,7 @@ class Scheduler:
 
         # Record which command raised before re-raising. The execution context
         # is unwound by the time `run()`'s caller can catch this, so the
-        # exception itself is the only channel that survives. (Java reports
-        # this through emitCompletedWithErrorEvent instead; the SchedulerEvent
-        # listener mechanism isn't ported yet - see DIVERGENCES.md #4.)
+        # exception itself is the only channel that survives.
         _attribute_to_command(error, command, root)
 
         if root is not None and root is not command:

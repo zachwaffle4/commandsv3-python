@@ -5,9 +5,8 @@
 """
 Checks that each ``commands3.robot_mode_triggers`` factory reads the robot
 state it claims to, by running a real robot through real driver station
-transitions. Java has no equivalent suite - the factories are one-liners
-over ``RobotState`` there too - but they are exactly the kind of one-liner
-that is easy to wire to the wrong predicate.
+transitions. The factories are one-liners over ``RobotState``, but they are
+exactly the kind of one-liner that is easy to wire to the wrong predicate.
 """
 
 from wpilib.testing.controller import RobotTestController

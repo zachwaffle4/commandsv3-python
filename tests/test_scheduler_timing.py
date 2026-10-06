@@ -4,7 +4,7 @@
 
 """
 Timing bookkeeping. ``wpilib.RobotController.get_time()`` reports
-nanoseconds (upstream ``c65465b004``), while the scheduler reports
+nanoseconds, while the scheduler reports
 milliseconds, so these pin the conversion rather than just checking that
 *some* number comes back.
 """

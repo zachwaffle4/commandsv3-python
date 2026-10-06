@@ -94,10 +94,10 @@ def test_group_waits_for_all_required_commands(scheduler):
 
 
 def test_group_with_no_required_commands_waits_for_any_optional(scheduler):
-    # Ports Java's ParallelGroupTest#race: members always yield at least once
-    # before finishing. A member that completes with zero yields would
-    # already be done by the time fork() and awaitAny() both touch the same
-    # optional-commands collection - an edge case Java's own tests avoid too.
+    # Members always yield at least once before finishing. fork() and
+    # any_of() both touch the same optional-commands collection, so a member
+    # that completes with zero yields would run twice - a known edge case
+    # this test deliberately avoids.
     m1, m2 = DummyMechanism("m1"), DummyMechanism("m2")
     ran = []
 
