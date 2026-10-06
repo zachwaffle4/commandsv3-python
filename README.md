@@ -6,8 +6,8 @@ by FRC (2027) and FTC (2027-2028) on the Systemcore control system. This is
 not affiliated with, endorsed by, or produced by FIRST or WPILib.
 
 **This is a proof of concept, not a production-ready library.** APIs may
-change without notice, and several pieces of the original Java framework
-haven't been ported.
+change without notice, and parts of the Java framework haven't been ported
+yet (see [What's missing](#whats-missing)).
 
 ## Installation
 
@@ -36,12 +36,12 @@ resolves conflicts by priority when two commands need the same mechanism,
 and fires **triggers** to start and stop commands based on button presses,
 sensor readings, or opmode state.
 
-Commands v3 (Java-only in upstream WPILib, since it depends on JDK
-continuations) writes command bodies as plain coroutine-driven functions
+Commands v3 writes command bodies as plain coroutine-driven functions
 instead of split `initialize()`/`execute()`/`end()`/`isFinished()` methods.
-Python has native coroutine support via `async`/`await`, so this port aims
-to bring that same programming model to Python - RobotPy doesn't have an
-equivalent yet.
+WPILib only ships it for Java, because it's built on JDK continuations.
+Python has coroutines built in through `async`/`await`, so the same
+programming model fits Python naturally. RobotPy doesn't have an equivalent
+yet, and this port fills that gap.
 
 ## Quick example
 
@@ -82,46 +82,75 @@ score = (
     .named("Score")
 )
 
-auto = drivetrain.drive_to(target).with_timeout(3.0).named("Auto")
+auto = drivetrain.drive_to(target).with_timeout(3.0)  # named "Drive To [3.0s timeout]"
 
 cmd3.Trigger(lambda: joystick.get_raw_button(1)).on_true(score)
 ```
 
-(HID button bindings like `CommandXboxController` haven't been ported yet -
-see [PORTING_STATUS.md](PORTING_STATUS.md) - so triggers are built from
-plain boolean-returning callables for now.)
+Controller button bindings aren't ported yet, so for now you build triggers
+from plain functions that return a bool.
+
+See [`examples/`](examples/) for a complete robot.
 
 ## Key pieces
 
-- **`Command`** - a unit of work with a name, required mechanisms, priority,
-  and an `async def` body. Built via `Command.requiring(...)`/
-  `Command.no_requirements(...)` or a `Mechanism`'s `.run()`.
-- **`Mechanism`** - hardware (or any other exclusively-ownable resource) that
-  commands claim while running. Subclass this per subsystem.
-- **`Scheduler`** - runs commands, resolves conflicts, and drives default
+- **`Command`** is a unit of work with a name, required mechanisms, a
+  priority, and an `async def` body. Build one with `Command.requiring(...)`,
+  `Command.no_requirements(...)`, or a `Mechanism`'s `.run()`.
+- **`Mechanism`** is hardware (or any other resource only one command should
+  use at a time) that commands claim while running. Subclass it per
+  subsystem. By default a mechanism can't be driven while the robot is
+  disabled. Commands that need it won't schedule, and running ones are
+  canceled when the robot disables. Override `controllable_during_disabled()`
+  to return `True` for things that are safe to run while disabled, like LEDs.
+- **`Scheduler`** runs commands, resolves conflicts, and drives default
   commands and triggers. `Scheduler.get_default()` is the shared instance
   most code should use.
-- **`Trigger`** - starts, stops, or toggles commands based on a boolean
-  condition (`on_true`, `while_true`, `toggle_on_true`, etc), composable
-  with `.and_()`/`.or_()`/`.negate()`.
-- **`commands3.robot_mode_triggers`** - trigger factories for robot state,
-  currently `autonomous()`/`teleop()`/`disabled()`/`utility()`. There is no
-  command-specific robot base class: extend `wpilib.OpModeRobot` directly
+- **`Trigger`** starts, stops, or toggles commands based on a boolean
+  condition (`on_true`, `while_true`, `toggle_on_true`, etc). Combine
+  triggers with `.and_()`/`.or_()`/`.negate()` or `&`/`|`/`-`.
+- **`commands3.robot_mode_triggers`** has trigger factories for robot state:
+  `autonomous()`, `teleop()`, `disabled()`, and `utility()`. There's no
+  command-specific robot base class. Extend `wpilib.OpModeRobot` directly
   and call `Scheduler.get_default().run()` from `robot_periodic()`.
-  Bindings created while an opmode or robot mode is active are
-  automatically scoped to it and torn down when it exits.
-- **`yield_()`/`wait()`/`wait_until()`/`fork()`/`await_()`** - the
-  coroutine primitives used inside a command's body to yield control, pause,
-  and compose with other commands.
+  Bindings created while an opmode or robot mode is active are scoped to it
+  and torn down when it exits.
+- **`yield_()`, `wait()`, `wait_until()`, `fork()`, `await_()`, `all_of()`,
+  `any_of()`** are the coroutine helpers you use inside a command body to
+  give up control for a tick, pause, and run other commands.
 
-## Divergences from the Java implementation
+## Differences from the Java version
 
-Python's coroutine model, garbage collection, and available WPILib bindings
-differ from Java's in a few places that require deliberate design choices
-rather than a line-for-line port - notably how command cancellation
-interacts with `try`/`finally`, and how `EventLoop` unbinding is
-implemented. 
+Names follow Python conventions: `snake_case` methods, and a trailing
+underscore where the Java name is a Python keyword (`await_`, `yield_`,
+`and_`, `or_`). Beyond naming, a few behaviors differ on purpose:
+
+- **Cancellation runs `finally` blocks.** A command is canceled by raising
+  `CommandCancelled` inside its body, so `try`/`finally` cleanup runs.
+  Java abandons the body without running it.
+- **`except Exception:` won't swallow a cancellation.** `CommandCancelled`
+  subclasses `BaseException`, the same way `GeneratorExit` does.
+- **A failed fork raises.** If `fork()`, `await_()`, `all_of()`, or
+  `any_of()` can't schedule a command, it raises `ForkFailed` and cancels
+  the whole composition. Pass `cancel_on_failure=False` to get the result
+  back and handle it yourself.
+- **Errors say which command failed.** When a command body raises,
+  `Scheduler.run()` re-raises the original exception with a note naming
+  the command. `failing_command(e)` returns that command.
+
+## What's missing
+
+Not ported yet, listed by their Java names:
+
+- Controller button bindings (`CommandXboxController`, `CommandGamepad`,
+  `CommandJoystick`, and the rest of the `button` package)
+- `StateMachine`
+- `SysIdRoutine`
+- Scheduler event listeners (`SchedulerEvent`) and scheduler telemetry
+- Sideloaded periodic callbacks (`Scheduler.sideload()`/`addPeriodic()`)
+- `Command.onExit()`, `Trigger.ifTrue()`, and the timeout overload of
+  `Coroutine.waitUntil()`
 
 ## License
 
-BSD-3-Clause, matching WPILib's own license - see [LICENSE.md](LICENSE.md).
+BSD-3-Clause, matching WPILib's own license. See [LICENSE.md](LICENSE.md).
