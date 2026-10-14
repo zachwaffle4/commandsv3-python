@@ -434,8 +434,16 @@ class Scheduler:
             # command back through scheduling would be wrong.
             return result
 
-        # Track this binding so we can disable it when it's out of scope.
-        self._active_bindings.append(binding)
+        if not isinstance(binding.scope, ForCommand):
+            # Track this binding so we can cancel it when it's out of scope.
+            # Triggers clean themselves up, but manually scheduled commands
+            # can't, so the scheduler tracks them.
+            #
+            # Command-scoped bindings are deliberately not tracked: the bound
+            # command is already canceled in the same tick its parent exits,
+            # so tracking would cancel it a second time on the next tick -
+            # killing it if it was rescheduled in between.
+            self._active_bindings.append(binding)
 
         self._evict_conflicting_on_deck_commands(command)
 
@@ -577,6 +585,9 @@ class Scheduler:
 
         if was_running:
             self._cancel_coroutine(state)
+            # on_exit first, in case on_cancel has special behavior that
+            # overrides the standard exit logic.
+            command.on_exit()
             command.on_cancel()
 
         self._remove_orphaned_children(command)
@@ -625,6 +636,7 @@ class Scheduler:
         self._running_commands.clear()
         for command, state in running:
             self._cancel_coroutine(state)
+            command.on_exit()
             command.on_cancel()
 
     # -- Run loop --------------------------------------------------------
@@ -766,6 +778,7 @@ class Scheduler:
             return
 
         if done:
+            command.on_exit()
             self._running_commands.pop(command, None)
             self._remove_orphaned_children(command)
 

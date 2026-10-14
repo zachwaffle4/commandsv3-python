@@ -83,6 +83,11 @@ class Command:
     :ivar on_cancel: called when the command is canceled before completing
         naturally. Should do simple, one-shot cleanup rather than looping
         logic.
+    :ivar on_exit: called whenever the command stops running after it has
+        started, whether it completed naturally, was canceled, or was
+        interrupted. Runs before ``on_cancel`` when both apply. Not called
+        for a command that was canceled while still queued. Should do
+        simple, one-shot cleanup rather than looping logic.
     """
 
     name: str
@@ -90,6 +95,7 @@ class Command:
     body: CommandBody
     priority: int = DEFAULT_PRIORITY
     on_cancel: Callable[[], None] = field(default=_no_op)
+    on_exit: Callable[[], None] = field(default=_no_op)
 
     def __await__(self):
         """
@@ -211,6 +217,7 @@ class _BuilderState:
         "built",
         "end_condition",
         "on_cancel",
+        "on_exit",
         "priority",
         "requirements",
     )
@@ -219,6 +226,7 @@ class _BuilderState:
         self.requirements: set[Mechanism] = set()
         self.body: CommandBody | None = None
         self.on_cancel: Callable[[], None] = _no_op
+        self.on_exit: Callable[[], None] = _no_op
         self.priority: int = DEFAULT_PRIORITY
         self.end_condition: Callable[[], bool] | None = None
         self.built: Command | None = None
@@ -266,6 +274,17 @@ class NeedsNameBuilderStage:
         self._state.on_cancel = on_cancel
         return self
 
+    def when_exited(self, on_exit: Callable[[], None]) -> NeedsNameBuilderStage:
+        """
+        Sets a callback to run whenever the command stops running, whether it
+        completed naturally, was canceled, or was interrupted. It doesn't run
+        if the command was stopped after being scheduled but before starting
+        to run.
+        """
+        _throw_if_already_built(self._state)
+        self._state.on_exit = on_exit
+        return self
+
     def with_priority(self, priority: int) -> NeedsNameBuilderStage:
         """Sets the command's priority."""
         _throw_if_already_built(self._state)
@@ -296,6 +315,7 @@ class NeedsNameBuilderStage:
             body=state.body,
             priority=state.priority,
             on_cancel=state.on_cancel,
+            on_exit=state.on_exit,
         )
 
         if state.end_condition is None:
