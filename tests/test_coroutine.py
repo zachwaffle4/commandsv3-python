@@ -5,7 +5,7 @@
 import pytest
 from wpilib import simulation
 
-from commands3 import CommandCancelled, wait, wait_until, yield_
+from commands3 import CommandCancelled, WaitResult, wait, wait_until, yield_
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +86,79 @@ def test_wait_until_blocks_until_condition_true():
     flag["ready"] = True
     assert _tick(coro) is True
     assert done == [True]
+
+
+def test_wait_until_without_timeout_reports_condition_met():
+    result = []
+
+    async def body():
+        result.append(await wait_until(lambda: True))
+
+    assert _tick(body()) is True
+    assert result == [WaitResult.CONDITION_MET]
+    assert not result[0].timed_out()
+
+
+def test_wait_until_with_timeout_reports_condition_met_before_timeout():
+    flag = {"ready": False}
+    result = []
+
+    async def body():
+        result.append(await wait_until(lambda: flag["ready"], timeout=1.0))
+
+    coro = body()
+    assert _tick(coro) is False
+
+    simulation.step_timing(0.5)
+    flag["ready"] = True
+    assert _tick(coro) is True
+    assert result == [WaitResult.CONDITION_MET]
+
+
+def test_wait_until_with_timeout_times_out():
+    result = []
+
+    async def body():
+        result.append(await wait_until(lambda: False, timeout=1.0))
+
+    coro = body()
+    assert _tick(coro) is False
+
+    simulation.step_timing(0.5)
+    assert _tick(coro) is False
+    assert not result
+
+    simulation.step_timing(0.6)
+    assert _tick(coro) is True
+    assert result == [WaitResult.TIMED_OUT]
+    assert result[0].timed_out()
+
+
+def test_wait_until_with_timeout_returns_immediately_if_condition_already_met():
+    result = []
+
+    async def body():
+        result.append(await wait_until(lambda: True, timeout=1.0))
+
+    assert _tick(body()) is True
+    assert result == [WaitResult.CONDITION_MET]
+
+
+def test_wait_until_prefers_condition_over_timeout_when_both_hold():
+    flag = {"ready": False}
+    result = []
+
+    async def body():
+        result.append(await wait_until(lambda: flag["ready"], timeout=1.0))
+
+    coro = body()
+    assert _tick(coro) is False
+
+    # Past the timeout, but the condition is also true on this tick.
+    simulation.step_timing(1.5)
+    flag["ready"] = True
+    assert _tick(coro) is True
+    assert result == [WaitResult.CONDITION_MET]
 
 
 def test_cancellation_runs_finally_block():

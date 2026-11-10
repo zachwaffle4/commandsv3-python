@@ -88,6 +88,9 @@ class ParallelGroupBuilder:
 
     def named(self, name: str) -> Command:
         """Creates the group. Requires everything its commands require; priority is the max of theirs."""
+        return self._named(name, use_automatic_name=False)
+
+    def _named(self, name: str, *, use_automatic_name: bool) -> Command:
         group = _build_parallel_group(
             name, list(self._required_commands), list(self._optional_commands)
         )
@@ -95,13 +98,10 @@ class ParallelGroupBuilder:
             return group
 
         # Wrap in a race against the end condition.
-        return (
-            ParallelGroupBuilder()
-            .optional(
-                group, Command.wait_until(self._end_condition).named("Until Condition")
-            )
-            .named(name)
+        race = ParallelGroupBuilder().optional(
+            group, Command.wait_until(self._end_condition).named("Until Condition")
         )
+        return race.with_automatic_name() if use_automatic_name else race.named(name)
 
     def with_automatic_name(self) -> Command:
         """Creates the group with a name derived from its commands' names."""
@@ -109,8 +109,8 @@ class ParallelGroupBuilder:
         optional = "(" + " | ".join(c.name for c in self._optional_commands) + ")"
 
         if not self._required_commands:
-            return self.named(optional)
+            return self._named(optional, use_automatic_name=True)
         elif not self._optional_commands:
-            return self.named(required)
+            return self._named(required, use_automatic_name=True)
         else:
-            return self.named(f"[{required} * {optional}]")
+            return self._named(f"[{required} * {optional}]", use_automatic_name=True)

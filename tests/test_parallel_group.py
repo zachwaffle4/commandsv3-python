@@ -190,3 +190,21 @@ def test_command_with_timeout_cancels_after_duration(scheduler):
         assert not scheduler.is_running(command)
     finally:
         simulation.resume_timing()
+
+
+def test_with_automatic_name_includes_until_condition():
+    async def park_body():
+        while True:
+            await yield_()
+
+    a = Command.no_requirements(park_body).named("A")
+    b = Command.no_requirements(park_body).named("B")
+
+    group = (
+        ParallelGroupBuilder()
+        .requiring(a, b)
+        .until(lambda: False)
+        .with_automatic_name()
+    )
+
+    assert group.name == "((A & B) | Until Condition)"

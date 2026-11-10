@@ -215,7 +215,11 @@ class Scheduler:
         self._running_commands: dict[Command, CommandState] = {}
         self._last_run_time_ms: wpimath.units.milliseconds = -1.0
         self._event_loop = EventLoop()
-        self._bound_triggers: list[Trigger] = []
+        # Strong references to triggers whose creation scope is still active.
+        # The event loop only holds triggers weakly, so this is what keeps a
+        # trigger polling; once its scope ends it's dropped from here and can
+        # be garbage collected if nothing else refers to it.
+        self._bound_triggers: dict[Trigger, None] = {}
 
     @staticmethod
     def get_default() -> Scheduler:
@@ -643,8 +647,9 @@ class Scheduler:
 
     def run(self) -> None:
         """
-        Advances the scheduler by one tick. In order: cancels commands and
-        unbinds triggers whose scope has gone inactive, cancels commands
+        Advances the scheduler by one tick. In order: cancels commands
+        whose scope has gone inactive and releases triggers whose scope has
+        gone inactive (letting uncached ones be collected), cancels commands
         that can't run while the robot is disabled (if it is), polls the
         event loop (running triggers and scheduling/canceling bound commands),
         schedules default commands for idle mechanisms, promotes queued
@@ -656,7 +661,7 @@ class Scheduler:
         start = wpilib.RobotController.get_time()
 
         self._cancel_stale_bindings()
-        self._unbind_stale_triggers()
+        self._release_stale_triggers()
         self._cancel_commands_that_cannot_run_in_disabled()
         self._event_loop.poll()
         self._schedule_default_commands()
@@ -675,14 +680,15 @@ class Scheduler:
             self.cancel(binding.command)
         self._active_bindings = still_active
 
-    def _unbind_stale_triggers(self) -> None:
-        still_bound = []
-        for trigger in self._bound_triggers:
-            if trigger.is_scope_active():
-                still_bound.append(trigger)
-                continue
-            trigger.unbind()
-        self._bound_triggers = still_bound
+    def _release_stale_triggers(self) -> None:
+        # Only drop the strong reference. The trigger isn't unbound from the
+        # event loop and keeps its bindings: a trigger that user code cached
+        # must keep updating, and one that nothing refers to is collected.
+        self._bound_triggers = {
+            trigger: None
+            for trigger in self._bound_triggers
+            if trigger.is_scope_active()
+        }
 
     def _cancel_commands_that_cannot_run_in_disabled(self) -> None:
         if robot_state_fetcher.get_fetcher().is_enabled():
@@ -712,7 +718,7 @@ class Scheduler:
     def _add_bound_trigger(self, trigger: Trigger) -> None:
         # Called by Trigger's constructor. Unbound automatically once its
         # creation scope goes inactive.
-        self._bound_triggers.append(trigger)
+        self._bound_triggers[trigger] = None
 
     def _promote_scheduled_commands(self) -> None:
         for state in list(self._queued_to_run.values()):

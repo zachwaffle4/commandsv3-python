@@ -136,7 +136,11 @@ class Command:
     @staticmethod
     def wait_until(condition: Callable[[], bool]) -> NeedsNameBuilderStage:
         """Starts building a command that simply waits until ``condition`` is true."""
-        return Command.no_requirements(lambda: wait_until(condition))
+
+        async def body() -> None:
+            await wait_until(condition)
+
+        return Command.no_requirements(body)
 
     @staticmethod
     def wait_for(seconds) -> NeedsNameBuilderStage:

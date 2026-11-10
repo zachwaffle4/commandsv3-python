@@ -53,20 +53,22 @@ class SequentialGroupBuilder:
 
     def named(self, name: str) -> Command:
         """Creates the sequence command, giving it the specified name."""
+        return self._named(name, use_automatic_name=False)
+
+    def _named(self, name: str, *, use_automatic_name: bool) -> Command:
         seq = _build_sequential_group(name, list(self._steps))
         if self._end_condition is None:
             return seq
 
         from .parallel_group import ParallelGroupBuilder
 
-        return (
-            ParallelGroupBuilder()
-            .optional(
-                seq, Command.wait_until(self._end_condition).named("Until Condition")
-            )
-            .named(name)
+        race = ParallelGroupBuilder().optional(
+            seq, Command.wait_until(self._end_condition).named("Until Condition")
         )
+        return race.with_automatic_name() if use_automatic_name else race.named(name)
 
     def with_automatic_name(self) -> Command:
         """Creates the sequence command with a name derived from its steps' names."""
-        return self.named(" -> ".join(c.name for c in self._steps))
+        return self._named(
+            " -> ".join(c.name for c in self._steps), use_automatic_name=True
+        )

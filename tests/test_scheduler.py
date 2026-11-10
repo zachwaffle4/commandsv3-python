@@ -17,6 +17,7 @@ from commands3 import (
     await_,
     failing_command,
     fork,
+    park,
     wait_until,
     yield_,
 )
@@ -311,6 +312,229 @@ def test_fork_result_await_completion_one_shot(scheduler):
     scheduler.run()
     assert ran
     assert scheduler.get_running_commands() == []
+
+
+async def _park_body():
+    await park()
+
+
+def test_any_of_does_not_cancel_rescheduled_command(scheduler):
+    ran_after_await = False
+    c1 = Command.no_requirements(_park_body).named("C1")
+    c2 = Command.no_requirements(_park_body).named("C2")
+
+    async def parent_body():
+        nonlocal ran_after_await
+        await any_of([c1, c2])
+        ran_after_await = True
+        await park()
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    # Cancel and reschedule c1 before the parent resumes. The parent sees
+    # c1's original run end, and must not cancel the new run.
+    scheduler.cancel(c1)
+    scheduler.schedule(c1)
+    scheduler.run()
+
+    assert ran_after_await
+    assert scheduler.get_running_commands() == [parent, c1]
+
+
+def test_all_of_does_not_wait_on_rescheduled_command(scheduler):
+    done = False
+    c1 = Command.no_requirements(_park_body).named("C1")
+
+    async def parent_body():
+        nonlocal done
+        await all_of([c1])
+        done = True
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    scheduler.cancel(c1)
+    scheduler.schedule(c1)
+    scheduler.run()
+
+    assert done
+    assert scheduler.get_running_commands() == [c1]
+
+
+def test_fork_result_delayed_await_completion_after_completion(scheduler):
+    child_ran = False
+    parent_done = False
+
+    async def child_body():
+        nonlocal child_ran
+        child_ran = True
+
+    child = Command.no_requirements(child_body).named("Child")
+
+    async def parent_body():
+        nonlocal parent_done
+        fork_result = fork(child)
+        await yield_()
+        await yield_()
+        # The child finished before await_completion() is called.
+        await fork_result.await_completion()
+        parent_done = True
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    scheduler.run()
+    assert child_ran
+    assert not scheduler.is_running(child)
+
+    scheduler.run()
+    assert parent_done
+    assert not scheduler.is_running(parent)
+
+
+def test_fork_result_delayed_await_completion_with_rescheduled_command(scheduler):
+    run_count = 0
+    parent_done = False
+
+    async def child_body():
+        nonlocal run_count
+        run_count += 1
+        if run_count > 1:
+            await park()
+
+    child = Command.no_requirements(child_body).named("Child")
+
+    async def parent_body():
+        nonlocal parent_done
+        fork_result = fork(child)
+        await yield_()
+        await yield_()
+        # Only the original run is awaited, not the reschedule below.
+        await fork_result.await_completion()
+        parent_done = True
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    assert run_count == 1
+    assert not scheduler.is_running(child)
+
+    scheduler.schedule(child)
+    scheduler.run()
+    assert scheduler.is_running(child)
+    assert run_count == 2
+    assert not parent_done
+
+    scheduler.run()
+    assert parent_done
+    assert not scheduler.is_running(parent)
+    assert scheduler.is_running(child)
+
+
+def test_fork_result_delayed_await_completion_partial_reschedule(scheduler):
+    c1_runs = 0
+    c2_done = False
+    parent_done = False
+
+    async def c1_body():
+        nonlocal c1_runs
+        c1_runs += 1
+        if c1_runs > 1:
+            await park()
+
+    async def c2_body():
+        await wait_until(lambda: c2_done)
+
+    c1 = Command.no_requirements(c1_body).named("C1")
+    c2 = Command.no_requirements(c2_body).named("C2")
+
+    async def parent_body():
+        nonlocal parent_done
+        fork_result = fork(c1, c2)
+        await yield_()
+        await fork_result.await_completion()
+        parent_done = True
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+    assert c1_runs == 1
+    assert not scheduler.is_running(c1)
+    assert scheduler.is_running(c2)
+
+    scheduler.schedule(c1)
+    scheduler.run()
+    assert c1_runs == 2
+    assert scheduler.is_running(c1)
+    assert scheduler.is_running(c2)
+    assert not parent_done
+
+    c2_done = True
+    scheduler.run()
+    assert parent_done
+    assert not scheduler.is_running(parent)
+    assert scheduler.is_running(c1)
+
+
+def test_fork_result_delayed_await_completion_large_set(scheduler):
+    n = 80
+    flags = [False] * n
+    run_counts = [0] * n
+    parent_done = False
+
+    def make_child(i):
+        async def body():
+            run_counts[i] += 1
+            if run_counts[i] == 1:
+                await wait_until(lambda: flags[i])
+            else:
+                await park()
+
+        return Command.no_requirements(body).named(f"LargeChild[{i}]")
+
+    children = [make_child(i) for i in range(n)]
+
+    async def parent_body():
+        nonlocal parent_done
+        fork_result = fork(*children)
+        await yield_()
+        await fork_result.await_completion()
+        parent_done = True
+
+    parent = Command.no_requirements(parent_body).named("ParentLarge")
+
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    first_batch = [*range(40), *range(64, 72)]
+    for i in first_batch:
+        flags[i] = True
+    scheduler.run()
+
+    rescheduled = [*range(20, 40), *range(68, 72)]
+    for i in rescheduled:
+        scheduler.schedule(children[i])
+    scheduler.run()
+
+    assert not parent_done
+    assert scheduler.is_running(parent)
+
+    for i in [*range(40, 64), *range(72, n)]:
+        flags[i] = True
+    scheduler.run()
+
+    # The parent finishes without waiting on the rescheduled runs.
+    assert parent_done
+    assert not scheduler.is_running(parent)
+    for i in rescheduled:
+        assert scheduler.is_running(children[i])
 
 
 def test_all_of_waits_for_every_command(scheduler):

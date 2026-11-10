@@ -124,3 +124,21 @@ def test_command_sequence_static_factory(scheduler):
         scheduler.run()
 
     assert order == ["A", "B"]
+
+
+def test_with_automatic_name_includes_until_condition():
+    async def park_body():
+        while True:
+            await yield_()
+
+    c1 = Command.no_requirements(park_body).named("C1")
+    c2 = Command.no_requirements(park_body).named("C2")
+
+    seq = (
+        SequentialGroupBuilder()
+        .and_then(c1, c2)
+        .until(lambda: True)
+        .with_automatic_name()
+    )
+
+    assert seq.name == "(C1 -> C2 | Until Condition)"

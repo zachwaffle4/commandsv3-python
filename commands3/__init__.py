@@ -35,6 +35,7 @@ from .command import (
 from .conflict_detector import Conflict, find_all_conflicts, throw_if_conflicts
 from .coroutine import (
     ForkResult,
+    WaitResult,
     all_of,
     any_of,
     await_,
@@ -105,6 +106,7 @@ __all__ = [
     "TeleopMode",
     "Trigger",
     "UtilityMode",
+    "WaitResult",
     "all_of",
     "any_of",
     "await_",

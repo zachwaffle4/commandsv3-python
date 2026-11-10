@@ -97,13 +97,25 @@ class Trigger:
         self._creation_scope: BindingScope = creation_scope
 
         scheduler._add_bound_trigger(self)
-        self._loop.bind(self._poll)
+        # Weakly bound: the event loop doesn't keep this trigger alive. The
+        # scheduler holds the strong reference until the creation scope goes
+        # inactive, after which an uncached trigger can be collected.
+        self._loop.bind_weak(self._poll)
 
     # -- Binding methods ---------------------------------------------------
 
     def on_true(self, command: Command) -> Trigger:
         """Starts ``command`` whenever the condition changes from false to true."""
         self._add_binding(BindingType.SCHEDULE_ON_RISING_EDGE, command)
+        return self
+
+    def if_true(self, command: Command) -> Trigger:
+        """
+        Starts ``command`` on every poll where the condition is true. Doesn't
+        cancel it when the condition goes false (use ``while_true`` for
+        that), and doesn't restart a command that's already running.
+        """
+        self._add_binding(BindingType.SCHEDULE_WHILE_HIGH, command)
         return self
 
     def on_false(self, command: Command) -> Trigger:
@@ -278,6 +290,7 @@ class Trigger:
         self._cached_signal = self._read_signal()
 
         if self._cached_signal == _Signal.HIGH:
+            self._schedule_bindings(BindingType.SCHEDULE_WHILE_HIGH)
             self._schedule_bindings(BindingType.CONTINUOUSLY_SCHEDULE_WHILE_HIGH)
         elif self._cached_signal == _Signal.LOW:
             self._schedule_bindings(BindingType.CONTINUOUSLY_SCHEDULE_WHILE_LOW)
@@ -357,7 +370,7 @@ class Trigger:
         self._bindings[binding_type].append(Binding(scope, binding_type, command))
 
         if not self._bound:
-            self._loop.bind(self._poll)
+            self._loop.bind_weak(self._poll)
             self._bound = True
 
     def _add_binding(self, binding_type: BindingType, command: Command) -> None:

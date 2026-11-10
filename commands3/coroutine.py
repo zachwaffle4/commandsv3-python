@@ -38,6 +38,7 @@ body can call them directly:
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ForkResult",
+    "WaitResult",
     "all_of",
     "any_of",
     "await_",
@@ -103,15 +105,46 @@ async def wait(seconds: wpimath.units.seconds) -> None:
         await yield_()
 
 
-async def wait_until(condition: Callable[[], bool]) -> None:
+class WaitResult(enum.Enum):
+    """How a call to ``wait_until`` ended."""
+
+    CONDITION_MET = enum.auto()
+    TIMED_OUT = enum.auto()
+
+    def timed_out(self) -> bool:
+        """Whether the wait ended because the timeout elapsed rather than the condition being met."""
+        return self is WaitResult.TIMED_OUT
+
+
+async def wait_until(
+    condition: Callable[[], bool], timeout: wpimath.units.seconds | None = None
+) -> WaitResult:
     """
-    Waits until ``condition`` returns ``True`` before returning.
+    Waits until ``condition`` returns ``True``, or until ``timeout`` seconds
+    have elapsed if one is given, and reports which happened. The condition
+    is checked before the timeout, so a condition that becomes true on the
+    same tick the timeout elapses counts as met.
+
+    Without a timeout this only returns once the condition is met, and waits
+    forever if it never is. Use a timeout in autonomous or automated
+    routines to stay resilient to a mechanism that never reaches its goal or
+    a faulty sensor.
 
     No direct ``asyncio`` analog - closest is polling a condition inside a
     loop of ``await asyncio.sleep(0)``, which is essentially what this does.
     """
+    if timeout is None:
+        while not condition():
+            await yield_()
+        return WaitResult.CONDITION_MET
+
+    timer = wpilib.Timer()
+    timer.start()
     while not condition():
+        if timer.has_elapsed(timeout):
+            return WaitResult.TIMED_OUT
         await yield_()
+    return WaitResult.CONDITION_MET
 
 
 async def park() -> None:
@@ -148,6 +181,12 @@ class ForkResult:
     scheduler: Scheduler
     forked_commands: tuple[Command, ...]
     failed_commands: tuple[ScheduleResult, ...]
+    # The scheduler run ID of each forked command at the time it was forked,
+    # parallel to ``forked_commands``. 0 means it had already finished (a
+    # one-shot). Waiting is keyed on these rather than on the command object
+    # so that a command that exits and is rescheduled in the same tick isn't
+    # mistaken for the run being awaited.
+    run_ids: tuple[int, ...] = ()
 
     @property
     def successful(self) -> bool:
@@ -178,9 +217,16 @@ class ForkResult:
         that are still running, so it won't re-schedule one that already
         completed. Does nothing if no commands were forked.
         """
-        for command in self.forked_commands:
-            while self.scheduler.is_scheduled_or_running(command):
+        for command, run_id in zip(self.forked_commands, self.run_ids, strict=True):
+            while _same_run(self.scheduler, command, run_id):
                 await yield_()
+
+
+def _same_run(scheduler: Scheduler, command: Command, run_id: int) -> bool:
+    # Whether ``command`` is still in the run identified by ``run_id``. An ID
+    # of 0 is a run that already finished, and 0 is also what an unscheduled
+    # command reports, so it must not compare equal.
+    return run_id != 0 and scheduler.run_id(command) == run_id
 
 
 def _check_all_forkable(
@@ -216,16 +262,18 @@ def _do_fork(
     # affected the robot - so the choice is to cancel the composition or let
     # user code deal with it.
     forked: list[Command] = []
+    run_ids: list[int] = []
     failed: list[ScheduleResult] = []
     for command in commands:
         result = state.scheduler.schedule(command)
         if result.successful:
             forked.append(command)
+            run_ids.append(state.scheduler.run_id(command))
         else:
             failed.append(result)
 
     return _finish(
-        ForkResult(state.scheduler, tuple(forked), tuple(failed)),
+        ForkResult(state.scheduler, tuple(forked), tuple(failed), tuple(run_ids)),
         cancel_on_failure=cancel_on_failure,
     )
 
@@ -294,13 +342,14 @@ async def await_(command: Command, *, cancel_on_failure: bool = True) -> ForkRes
     # No siblings, so no chance of the sibling conflict _do_fork() guards
     # against.
     state.scheduler.schedule(command)
+    run_id = state.scheduler.run_id(command)
 
-    while state.scheduler.is_scheduled_or_running(command):
+    while _same_run(state.scheduler, command, run_id):
         # A one-shot command runs to completion within the schedule call
-        # above, leaving nothing to await.
+        # above, leaving run_id at 0 and nothing to await.
         await yield_()
 
-    return ForkResult(state.scheduler, (command,), ())
+    return ForkResult(state.scheduler, (command,), (), (run_id,))
 
 
 async def all_of(
@@ -330,7 +379,10 @@ async def all_of(
     if result.failed:
         return result
 
-    while any(state.scheduler.is_scheduled_or_running(command) for command in commands):
+    while any(
+        _same_run(state.scheduler, command, run_id)
+        for command, run_id in zip(result.forked_commands, result.run_ids, strict=True)
+    ):
         await yield_()
 
     return result
@@ -364,11 +416,14 @@ async def any_of(
     if result.failed:
         return result
 
-    while all(state.scheduler.is_scheduled_or_running(command) for command in commands):
+    runs = list(zip(result.forked_commands, result.run_ids, strict=True))
+    while all(_same_run(state.scheduler, command, run_id) for command, run_id in runs):
         await yield_()
 
-    # At least one command exited; cancel the rest.
-    for command in commands:
-        state.scheduler.cancel(command)
+    # At least one command exited; cancel the rest. A command that exited and
+    # was rescheduled elsewhere is a different run and is left alone.
+    for command, run_id in runs:
+        if _same_run(state.scheduler, command, run_id):
+            state.scheduler.cancel(command)
 
     return result

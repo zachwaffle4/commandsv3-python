@@ -2,6 +2,9 @@
 # Open Source Software; you can modify and/or share it under the terms of
 # the WPILib BSD license file in the root directory of this project.
 
+import gc
+import weakref
+
 import hal
 import pytest
 from wpilib import simulation
@@ -39,6 +42,10 @@ def _one_shot(mechanism):
         ran.append(True)
 
     return Command.requiring(mechanism).executing(body).named("OneShot"), ran
+
+
+async def _one_tick():
+    await yield_()
 
 
 def _forever(mechanism, on_cancel=None):
@@ -110,6 +117,57 @@ def test_while_true_does_not_restart_a_naturally_completed_command(scheduler):
     scheduler.run()
     scheduler.run()
     assert ran == [True]
+
+
+def test_if_true_schedules_a_one_shot_on_every_true_poll(scheduler):
+    m = DummyMechanism()
+    flag = {"value": False}
+    command, ran = _one_shot(m)
+    Trigger(lambda: flag["value"], scheduler).if_true(command)
+
+    scheduler.run()
+    assert ran == []
+
+    flag["value"] = True
+    scheduler.run()
+    assert ran == [True]
+
+    scheduler.run()
+    assert ran == [True, True]
+
+    flag["value"] = False
+    scheduler.run()
+    assert ran == [True, True]
+
+
+def test_if_true_does_not_restart_or_cancel_a_long_running_command(scheduler):
+    m = DummyMechanism()
+    flag = {"value": True}
+    starts = []
+    canceled = []
+
+    async def body():
+        starts.append(True)
+        while True:
+            await yield_()
+
+    command = (
+        Command.requiring(m)
+        .executing(body)
+        .when_canceled(lambda: canceled.append(True))
+        .named("Long")
+    )
+    Trigger(lambda: flag["value"], scheduler).if_true(command)
+
+    scheduler.run()
+    scheduler.run()
+    assert starts == [True]
+    assert scheduler.is_running(command)
+
+    flag["value"] = False
+    scheduler.run()
+    assert scheduler.is_running(command)
+    assert canceled == []
 
 
 def test_retry_while_true_restarts_a_naturally_completed_command(scheduler):
@@ -271,6 +329,74 @@ def test_trigger_created_inside_a_command_unbinds_when_it_stops(scheduler):
 
     assert not scheduler.is_running(bound_command)
     assert not captured["trigger"].is_scope_active()
+
+
+def test_cached_trigger_keeps_updating_after_its_creation_scope_ends(scheduler):
+    flag = {"value": False}
+    inner = Command.no_requirements(_one_tick).named("Inner")
+    captured = {}
+
+    async def scoping_body():
+        trigger = Trigger(lambda: flag["value"], scheduler)
+        trigger.on_true(inner)
+        captured["trigger"] = trigger
+        await _one_tick()
+
+    scheduler.schedule(Command.no_requirements(scoping_body).named("Outer"))
+    scheduler.run()
+    scheduler.run()
+    scheduler.run()
+    trigger = captured["trigger"]
+    assert not trigger.is_scope_active()
+
+    # Scope has ended, but a trigger the user still holds must keep polling.
+    flag["value"] = True
+    assert not trigger.get_as_boolean()
+    scheduler.run()
+    assert trigger.get_as_boolean()
+    flag["value"] = False
+    scheduler.run()
+    assert not trigger.get_as_boolean()
+
+
+def test_trigger_with_a_live_scope_is_retained_without_user_references(scheduler):
+    flag = {"value": False}
+    command = _forever(DummyMechanism())
+
+    ref = weakref.ref(Trigger(lambda: flag["value"], scheduler).while_true(command))
+    gc.collect()
+    assert ref() is not None
+
+    flag["value"] = True
+    scheduler.run()
+    assert scheduler.is_running(command)
+
+
+def test_trigger_is_collected_after_its_scope_ends_if_uncached(scheduler, fake_fetcher):
+    fake_fetcher.opmode_id = 1
+    fake_fetcher.opmode_name = "opmode"
+    flag = {"value": False}
+    fired = []
+
+    async def body():
+        fired.append(True)
+
+    command = Command.no_requirements(body).named("Fires")
+    ref = weakref.ref(Trigger(lambda: flag["value"], scheduler).on_true(command))
+
+    scheduler.run()
+    gc.collect()
+    assert ref() is not None, "still in scope, must not be collected"
+
+    fake_fetcher.opmode_id = 0
+    fake_fetcher.opmode_name = ""
+    flag["value"] = True
+    scheduler.run()  # releases the scheduler's strong reference
+    gc.collect()
+
+    assert ref() is None
+    scheduler.run()
+    assert fired == []
 
 
 def test_binding_scopes_to_opmode_if_available(scheduler, fake_fetcher):
