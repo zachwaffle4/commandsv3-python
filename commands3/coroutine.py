@@ -52,7 +52,7 @@ from .exceptions import ForkFailed
 
 if TYPE_CHECKING:
     from .command import Command
-    from .scheduler import CommandState, Scheduler, ScheduleResult
+    from .scheduler import Scheduler, ScheduleResult
 
 __all__ = [
     "ForkResult",
@@ -229,8 +229,16 @@ def _same_run(scheduler: Scheduler, command: Command, run_id: int) -> bool:
     return run_id != 0 and scheduler.run_id(command) == run_id
 
 
+def _resolve_cancel_on_failure(cancel_on_failure: bool | None) -> bool:
+    # None means "whatever is appropriate for the caller": cancel in a
+    # command, don't in a sideload.
+    if cancel_on_failure is None:
+        return _ec.cancels_on_fork_failure_by_default()
+    return cancel_on_failure
+
+
 def _check_all_forkable(
-    state: CommandState, commands: Collection[Command], *, cancel_on_failure: bool
+    scheduler: Scheduler, commands: Collection[Command], *, cancel_on_failure: bool
 ) -> ForkResult:
     # Checks that every command could be forked, before any of them is.
     # Conflicts *within* the batch are a bug in the calling code rather than
@@ -240,20 +248,20 @@ def _check_all_forkable(
     schedulable: list[Command] = []
     unschedulable: list[ScheduleResult] = []
     for command in commands:
-        result = state.scheduler.is_schedulable(command)
+        result = scheduler.is_schedulable(command)
         if result.successful:
             schedulable.append(command)
         else:
             unschedulable.append(result)
 
     return _finish(
-        ForkResult(state.scheduler, tuple(schedulable), tuple(unschedulable)),
+        ForkResult(scheduler, tuple(schedulable), tuple(unschedulable)),
         cancel_on_failure=cancel_on_failure,
     )
 
 
 def _do_fork(
-    state: CommandState, commands: Collection[Command], *, cancel_on_failure: bool
+    scheduler: Scheduler, commands: Collection[Command], *, cancel_on_failure: bool
 ) -> ForkResult:
     # The actual scheduling pass. Separate from _check_all_forkable because a
     # child can immediately schedule a grandchild that conflicts with a later
@@ -265,15 +273,15 @@ def _do_fork(
     run_ids: list[int] = []
     failed: list[ScheduleResult] = []
     for command in commands:
-        result = state.scheduler.schedule(command)
+        result = scheduler.schedule(command)
         if result.successful:
             forked.append(command)
-            run_ids.append(state.scheduler.run_id(command))
+            run_ids.append(scheduler.run_id(command))
         else:
             failed.append(result)
 
     return _finish(
-        ForkResult(state.scheduler, tuple(forked), tuple(failed), tuple(run_ids)),
+        ForkResult(scheduler, tuple(forked), tuple(failed), tuple(run_ids)),
         cancel_on_failure=cancel_on_failure,
     )
 
@@ -284,7 +292,7 @@ def _finish(result: ForkResult, *, cancel_on_failure: bool) -> ForkResult:
     return result
 
 
-def fork(*commands: Command, cancel_on_failure: bool = True) -> ForkResult:
+def fork(*commands: Command, cancel_on_failure: bool | None = None) -> ForkResult:
     """
     Schedules one or more commands to run alongside the current command and
     returns immediately, without waiting for them to complete.
@@ -294,6 +302,11 @@ def fork(*commands: Command, cancel_on_failure: bool = True) -> ForkResult:
     first. To fork and later wait for completion, use the returned result's
     ``await_completion()``, or ``await_()``/``all_of()`` afterward.
 
+    Also usable from a sideload (see ``Scheduler.sideload()``). A sideload
+    isn't a command, so there is no parent: the forked commands are queued as
+    top-level commands, start on the next promotion step, and outlast the
+    sideload.
+
     Forking is all-or-nothing: if any command can't be scheduled, none of
     them are.
 
@@ -302,27 +315,31 @@ def fork(*commands: Command, cancel_on_failure: bool = True) -> ForkResult:
     parent the way a structured-concurrency task group would be, rather than
     running independently until explicitly canceled.
 
-    :param cancel_on_failure: when true (the default), a command that can't
-        be forked raises ``ForkFailed``, canceling this command and the whole
+    :param cancel_on_failure: when true, a command that can't be forked
+        raises ``ForkFailed``, canceling this command and the whole
         composition it belongs to. Set it false to get a failed
-        ``ForkResult`` back and recover in the command body instead.
+        ``ForkResult`` back and recover in the body instead. Left unset,
+        this is true in a command and false in a sideload.
     :raises ValueError: if any of the given commands require the same
         mechanism as another.
-    :raises RuntimeError: if called outside a command currently being run
-        by a ``Scheduler``.
+    :raises RuntimeError: if called outside a command or sideload currently
+        being run by a ``Scheduler``.
     :raises ForkFailed: if a command couldn't be forked and
         ``cancel_on_failure`` is true.
     """
-    state = _ec.require_current_state()
+    scheduler = _ec.require_current_scheduler()
+    cancel = _resolve_cancel_on_failure(cancel_on_failure)
 
-    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    check = _check_all_forkable(scheduler, commands, cancel_on_failure=cancel)
     if check.failed:
         return check
 
-    return _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
+    return _do_fork(scheduler, commands, cancel_on_failure=cancel)
 
 
-async def await_(command: Command, *, cancel_on_failure: bool = True) -> ForkResult:
+async def await_(
+    command: Command, *, cancel_on_failure: bool | None = None
+) -> ForkResult:
     """
     Schedules ``command`` (if it isn't already scheduled or running) and
     suspends the current command until it completes.
@@ -333,27 +350,28 @@ async def await_(command: Command, *, cancel_on_failure: bool = True) -> ForkRes
     :raises ForkFailed: if the command couldn't be scheduled and
         ``cancel_on_failure`` is true.
     """
-    state = _ec.require_current_state()
+    scheduler = _ec.require_current_scheduler()
+    cancel = _resolve_cancel_on_failure(cancel_on_failure)
 
-    check = _check_all_forkable(state, (command,), cancel_on_failure=cancel_on_failure)
+    check = _check_all_forkable(scheduler, (command,), cancel_on_failure=cancel)
     if check.failed:
         return check
 
     # No siblings, so no chance of the sibling conflict _do_fork() guards
     # against.
-    state.scheduler.schedule(command)
-    run_id = state.scheduler.run_id(command)
+    scheduler.schedule(command)
+    run_id = scheduler.run_id(command)
 
-    while _same_run(state.scheduler, command, run_id):
+    while _same_run(scheduler, command, run_id):
         # A one-shot command runs to completion within the schedule call
         # above, leaving run_id at 0 and nothing to await.
         await yield_()
 
-    return ForkResult(state.scheduler, (command,), (), (run_id,))
+    return ForkResult(scheduler, (command,), (), (run_id,))
 
 
 async def all_of(
-    commands: Collection[Command], *, cancel_on_failure: bool = True
+    commands: Collection[Command], *, cancel_on_failure: bool | None = None
 ) -> ForkResult:
     """
     Schedules ``commands`` (any not already scheduled or running) and
@@ -369,18 +387,19 @@ async def all_of(
     :raises ForkFailed: if a command couldn't be scheduled and
         ``cancel_on_failure`` is true.
     """
-    state = _ec.require_current_state()
+    scheduler = _ec.require_current_scheduler()
+    cancel = _resolve_cancel_on_failure(cancel_on_failure)
 
-    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    check = _check_all_forkable(scheduler, commands, cancel_on_failure=cancel)
     if check.failed:
         return check
 
-    result = _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
+    result = _do_fork(scheduler, commands, cancel_on_failure=cancel)
     if result.failed:
         return result
 
     while any(
-        _same_run(state.scheduler, command, run_id)
+        _same_run(scheduler, command, run_id)
         for command, run_id in zip(result.forked_commands, result.run_ids, strict=True)
     ):
         await yield_()
@@ -389,7 +408,7 @@ async def all_of(
 
 
 async def any_of(
-    commands: Collection[Command], *, cancel_on_failure: bool = True
+    commands: Collection[Command], *, cancel_on_failure: bool | None = None
 ) -> ForkResult:
     """
     Schedules ``commands`` (any not already scheduled or running) and
@@ -406,24 +425,25 @@ async def any_of(
     :raises ForkFailed: if a command couldn't be scheduled and
         ``cancel_on_failure`` is true.
     """
-    state = _ec.require_current_state()
+    scheduler = _ec.require_current_scheduler()
+    cancel = _resolve_cancel_on_failure(cancel_on_failure)
 
-    check = _check_all_forkable(state, commands, cancel_on_failure=cancel_on_failure)
+    check = _check_all_forkable(scheduler, commands, cancel_on_failure=cancel)
     if check.failed:
         return check
 
-    result = _do_fork(state, commands, cancel_on_failure=cancel_on_failure)
+    result = _do_fork(scheduler, commands, cancel_on_failure=cancel)
     if result.failed:
         return result
 
     runs = list(zip(result.forked_commands, result.run_ids, strict=True))
-    while all(_same_run(state.scheduler, command, run_id) for command, run_id in runs):
+    while all(_same_run(scheduler, command, run_id) for command, run_id in runs):
         await yield_()
 
     # At least one command exited; cancel the rest. A command that exited and
     # was rescheduled elsewhere is a different run and is left alone.
     for command, run_id in runs:
-        if _same_run(state.scheduler, command, run_id):
-            state.scheduler.cancel(command)
+        if _same_run(scheduler, command, run_id):
+            scheduler.cancel(command)
 
     return result

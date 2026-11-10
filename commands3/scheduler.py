@@ -11,6 +11,7 @@ same mechanism, and driving default commands, triggers, and the event loop.
 from __future__ import annotations
 
 import abc
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -26,14 +27,16 @@ from . import (
     execution_context as ec,
 )
 from .binding import Binding
+from .coroutine import yield_
 from .event_loop import EventLoop
 from .exceptions import CommandCancelled, ForkFailed, _attribute_to_command
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Coroutine, Iterable
 
     import wpimath.units
 
+    from .binding import BindingScope
     from .command import Command
     from .mechanism import Mechanism
     from .trigger import Trigger
@@ -60,6 +63,14 @@ def _nanos_to_ms(nanos: wpimath.units.nanoseconds) -> wpimath.units.milliseconds
     # mixed-up unit. This one function is the only place the conversion
     # factor appears, and tests/test_scheduler_timing.py pins it.
     return nanos / 1_000_000.0
+
+
+@dataclass(eq=False)
+class _Sideload:
+    # A function the scheduler runs every tick alongside commands, until it
+    # finishes or its scope goes inactive. Identity-compared, like a command.
+    scope: BindingScope
+    coroutine: Coroutine[Any, Any, None]
 
 
 def _require_valid_default_command(
@@ -220,6 +231,7 @@ class Scheduler:
         # trigger polling; once its scope ends it's dropped from here and can
         # be garbage collected if nothing else refers to it.
         self._bound_triggers: dict[Trigger, None] = {}
+        self._sideloads: list[_Sideload] = []
 
     @staticmethod
     def get_default() -> Scheduler:
@@ -232,6 +244,97 @@ class Scheduler:
     def create_independent_scheduler() -> Scheduler:
         """Creates a new scheduler instance independent of the default one. Useful for tests."""
         return Scheduler()
+
+    # -- Sideloads ---------------------------------------------------------
+
+    def sideload(self, body: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        """
+        Adds a function to run as part of the scheduler, once per ``run()``
+        and before triggers are polled. It shouldn't manipulate or control
+        any mechanisms, but can log information, update data (such as
+        simulations or LED buffers), or do some other helpful task. It
+        manages its own control flow and end condition, and is removed once
+        it returns.
+
+        ``body`` is an ``async def`` function taking no arguments, like a
+        command's body, and runs until its first ``await yield_()`` on the
+        first tick. Like a command, any loop in it must yield control back
+        to the scheduler or it will stall the program. If you want to run one
+        plain function every tick, use ``add_periodic()``.
+
+        The sideload is scoped like a binding made here: if it's added from
+        inside a command it's removed when that command exits, and if it's
+        added during an opmode or robot mode it's removed when that ends.
+        Otherwise it lasts as long as the scheduler.
+
+        ``fork()``, ``await_()``, ``all_of()`` and ``any_of()`` work inside a
+        sideload. Commands it forks are queued as top-level commands with no
+        parent, so they outlast the sideload. A fork that fails doesn't cancel
+        the sideload the way it cancels a command - it returns the failed
+        ``ForkResult`` so the sideload can recover - unless
+        ``cancel_on_failure=True`` is passed.
+
+        An exception raised by ``body`` removes the sideload and propagates
+        out of ``run()``.
+
+        :raises TypeError: if ``body`` isn't an ``async def`` function.
+        """
+        coroutine = body()
+        if not inspect.iscoroutine(coroutine):
+            raise TypeError(
+                "A sideload body must be an `async def` function, "
+                f"but calling it returned {type(coroutine).__name__}"
+            )
+        self._sideloads.append(_Sideload(create_narrowest_scope(self), coroutine))
+
+    def add_periodic(self, callback: Callable[[], None]) -> None:
+        """
+        Adds a function to call once per ``run()``, before triggers are
+        polled, for as long as the scheduler lives (or, like ``sideload()``,
+        until the enclosing command or opmode ends). It shouldn't manipulate
+        or control any mechanisms; it is meant for logging and updating data.
+
+        Equivalent to a ``sideload()`` with an unending loop::
+
+            async def body():
+                while True:
+                    callback()
+                    await yield_()
+        """
+
+        async def body() -> None:
+            while True:
+                callback()
+                await yield_()
+
+        self.sideload(body)
+
+    def _run_periodic_sideloads(self) -> None:
+        # Copy: a sideload may add another, which should first run next tick.
+        for sideload in list(self._sideloads):
+            if not sideload.scope.active():
+                # The enclosing scope exited - drop it without running it.
+                self._remove_sideload(sideload)
+                continue
+
+            try:
+                with ec.sideloading(self):
+                    sideload.coroutine.send(None)
+            except (StopIteration, CommandCancelled):
+                # Finished, or a fork failure it asked to be canceled on.
+                # ForkFailed is a CommandCancelled.
+                self._remove_sideload(sideload)
+            except BaseException:
+                self._remove_sideload(sideload)
+                raise
+
+    def _remove_sideload(self, sideload: _Sideload) -> None:
+        if sideload in self._sideloads:
+            self._sideloads.remove(sideload)
+        # Closing runs any `finally` blocks of one that's suspended, and
+        # keeps Python from warning about a never-awaited coroutine for one
+        # that never got to run.
+        sideload.coroutine.close()
 
     # -- Default commands -----------------------------------------------
 
@@ -650,7 +753,8 @@ class Scheduler:
         Advances the scheduler by one tick. In order: cancels commands
         whose scope has gone inactive and releases triggers whose scope has
         gone inactive (letting uncached ones be collected), cancels commands
-        that can't run while the robot is disabled (if it is), polls the
+        that can't run while the robot is disabled (if it is), runs
+        sideloaded functions, polls the
         event loop (running triggers and scheduling/canceling bound commands),
         schedules default commands for idle mechanisms, promotes queued
         commands to running, then runs every running command until it
@@ -663,6 +767,8 @@ class Scheduler:
         self._cancel_stale_bindings()
         self._release_stale_triggers()
         self._cancel_commands_that_cannot_run_in_disabled()
+        # Sideloads may change state that triggers read, so run them first.
+        self._run_periodic_sideloads()
         self._event_loop.poll()
         self._schedule_default_commands()
         self._promote_scheduled_commands()

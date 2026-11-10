@@ -147,9 +147,6 @@ Not ported yet, listed by their Java names:
 - `StateMachine`
 - `SysIdRoutine`
 - Scheduler event listeners (`SchedulerEvent`) and scheduler telemetry
-- Sideloaded periodic callbacks (`Scheduler.sideload()`/`addPeriodic()`)
-- `Command.onExit()`, `Trigger.ifTrue()`, and the timeout overload of
-  `Coroutine.waitUntil()`
 
 ## License
 
