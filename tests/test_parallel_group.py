@@ -208,3 +208,179 @@ def test_with_automatic_name_includes_until_condition():
     )
 
     assert group.name == "((A & B) | Until Condition)"
+
+
+async def _park_body():
+    while True:
+        await yield_()
+
+
+def _parked(name):
+    return Command.no_requirements(_park_body).named(name)
+
+
+def _counting(mechanism, name, ticks, counts):
+    async def body():
+        for _ in range(ticks):
+            await yield_()
+            counts[name] += 1
+
+    return Command.requiring(mechanism).executing(body).named(name)
+
+
+def test_required_commands_all_run_to_completion(scheduler):
+    counts = {"C1": 0, "C2": 0}
+    c1 = _counting(DummyMechanism("R1"), "C1", 5, counts)
+    c2 = _counting(DummyMechanism("R2"), "C2", 10, counts)
+
+    parallel = ParallelGroupBuilder().requiring(c1, c2).named("Parallel")
+    scheduler.schedule(parallel)
+
+    # The first run schedules and starts the commands.
+    scheduler.run()
+    assert scheduler.is_running(parallel)
+    assert scheduler.is_running(c1)
+    assert scheduler.is_running(c2)
+
+    for i in range(1, 5):
+        scheduler.run()
+        assert scheduler.is_running(c1)
+        assert scheduler.is_running(c2)
+        assert counts == {"C1": i, "C2": i}
+
+    # c1 finishes after 5 iterations; c2 continues for another 5.
+    for i in range(5, 10):
+        scheduler.run()
+        assert not scheduler.is_running(c1)
+        assert scheduler.is_running(c2)
+        assert counts == {"C1": 5, "C2": i}
+
+    # One final run ends c2 and the group.
+    assert scheduler.is_running(parallel)
+    scheduler.run()
+    assert not scheduler.is_running(c1)
+    assert not scheduler.is_running(c2)
+    assert not scheduler.is_running(parallel)
+    assert counts == {"C1": 5, "C2": 10}
+
+
+def test_race_ends_when_the_first_optional_command_finishes(scheduler):
+    counts = {"C1": 0, "C2": 0}
+    c1 = _counting(DummyMechanism("R1"), "C1", 5, counts)
+    c2 = _counting(DummyMechanism("R2"), "C2", 10, counts)
+
+    race = ParallelGroupBuilder().optional(c1, c2).named("Race")
+    scheduler.schedule(race)
+
+    scheduler.run()
+    assert scheduler.is_running(race)
+    assert scheduler.is_running(c1)
+    assert scheduler.is_running(c2)
+
+    for i in range(1, 5):
+        scheduler.run()
+        assert scheduler.is_running(c1)
+        assert scheduler.is_running(c2)
+        assert counts == {"C1": i, "C2": i}
+
+    scheduler.run()  # completes c1
+    assert not scheduler.is_running(race)
+    assert not scheduler.is_running(c1)
+    assert not scheduler.is_running(c2)
+    assert counts == {"C1": 5, "C2": 5}
+
+
+def test_nested_groups_run_until_the_inner_command_completes(scheduler):
+    counts = {"Command": 0}
+    command = _counting(DummyMechanism("mechanism"), "Command", 5, counts)
+
+    inner = ParallelGroupBuilder().requiring(command).named("Inner")
+    outer = ParallelGroupBuilder().optional(inner).named("Outer")
+
+    # Scheduling puts only the outer group on deck.
+    scheduler.schedule(outer)
+    assert scheduler.is_scheduled(outer)
+    assert not scheduler.is_scheduled_or_running(inner)
+    assert not scheduler.is_scheduled_or_running(command)
+
+    # The first run starts the inner group and the command.
+    scheduler.run()
+    assert scheduler.is_running(outer)
+    assert scheduler.is_running(inner)
+    assert scheduler.is_running(command)
+    assert counts["Command"] == 0
+
+    for i in range(1, 5):
+        scheduler.run()
+        assert scheduler.is_running(outer)
+        assert scheduler.is_running(inner)
+        assert scheduler.is_running(command), f"the command should be running ({i})"
+        assert counts["Command"] == i
+
+    # The command completes naturally.
+    scheduler.run()
+    assert not scheduler.is_running(outer)
+    assert not scheduler.is_running(inner)
+    assert not scheduler.is_running(command)
+
+
+def test_automatic_name_of_a_race():
+    a, b, c = _parked("A"), _parked("B"), _parked("C")
+    group = ParallelGroupBuilder().optional(a, b, c).with_automatic_name()
+    assert group.name == "(A | B | C)"
+
+
+def test_automatic_name_of_a_group_of_required_commands():
+    a, b, c = _parked("A"), _parked("B"), _parked("C")
+    group = ParallelGroupBuilder().requiring(a, b, c).with_automatic_name()
+    assert group.name == "(A & B & C)"
+
+
+def test_automatic_name_of_a_deadline_group():
+    a, b, c = _parked("A"), _parked("B"), _parked("C")
+    group = ParallelGroupBuilder().requiring(a).optional(b, c).with_automatic_name()
+    assert group.name == "[(A) * (B | C)]"
+
+
+def test_builder_with_only_optional_commands_runs_all_of_them_and_names_itself(
+    scheduler,
+):
+    a, b = _parked("A"), _parked("B")
+    group = ParallelGroupBuilder().optional(a, b).with_automatic_name()
+
+    assert group.name == "(A | B)"
+    scheduler.schedule(group)
+    scheduler.run()
+    assert scheduler.is_running(a)
+    assert scheduler.is_running(b)
+
+
+def test_builder_with_only_required_commands_runs_all_of_them_and_names_itself(
+    scheduler,
+):
+    a, b = _parked("A"), _parked("B")
+    group = ParallelGroupBuilder().requiring(a, b).with_automatic_name()
+
+    assert group.name == "(A & B)"
+    scheduler.schedule(group)
+    scheduler.run()
+    assert scheduler.is_running(a)
+    assert scheduler.is_running(b)
+
+
+def test_builder_with_required_and_optional_commands_runs_all_of_them(scheduler):
+    req_a, req_b = _parked("ReqA"), _parked("ReqB")
+    opt_x, opt_y = _parked("OptX"), _parked("OptY")
+
+    group = (
+        ParallelGroupBuilder()
+        .requiring(req_a, req_b)
+        .optional(opt_x, opt_y)
+        .with_automatic_name()
+    )
+
+    assert group.name == "[(ReqA & ReqB) * (OptX | OptY)]"
+    scheduler.schedule(group)
+    scheduler.run()
+    for command in (req_a, req_b, opt_x, opt_y):
+        assert scheduler.is_running(command)
