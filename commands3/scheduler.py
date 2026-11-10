@@ -26,6 +26,9 @@ from . import (
 from . import (
     execution_context as ec,
 )
+from . import (
+    scheduler_event as events,
+)
 from .binding import Binding
 from .coroutine import yield_
 from .event_loop import EventLoop
@@ -232,6 +235,8 @@ class Scheduler:
         # be garbage collected if nothing else refers to it.
         self._bound_triggers: dict[Trigger, None] = {}
         self._sideloads: list[_Sideload] = []
+        # dict, not set/list, for insertion-ordered "no duplicates" semantics.
+        self._event_listeners: dict[Callable[[events.SchedulerEvent], None], None] = {}
 
     @staticmethod
     def get_default() -> Scheduler:
@@ -244,6 +249,36 @@ class Scheduler:
     def create_independent_scheduler() -> Scheduler:
         """Creates a new scheduler instance independent of the default one. Useful for tests."""
         return Scheduler()
+
+    # -- Events ------------------------------------------------------------
+
+    def add_event_listener(
+        self, listener: Callable[[events.SchedulerEvent], None]
+    ) -> None:
+        """
+        Registers ``listener`` to be called with every ``SchedulerEvent`` the
+        scheduler emits (see the ``scheduler_event`` module for the types).
+        Adding the same listener twice has no additional effect.
+
+        Events are emitted immediately, in the middle of whatever the
+        scheduler is doing. Listeners should be quick and simple, and must
+        not schedule or cancel commands, which can leave the scheduler in an
+        inconsistent state. They are meant for logging and telemetry. In
+        particular, a one-shot command that finishes inside a single
+        ``run()`` never shows up in ``get_running_commands()``, but it does
+        produce ``Scheduled``, ``Mounted`` and ``Completed`` events.
+
+        An exception raised by a listener propagates to whatever triggered the
+        event.
+        """
+        self._event_listeners[listener] = None
+
+    def _emit(self, event_type: type[events.SchedulerEvent], *args: Any) -> None:
+        if not self._event_listeners:
+            return
+        event = event_type(*args, timestamp_nanos=wpilib.RobotController.get_time())
+        for listener in list(self._event_listeners):
+            listener(event)
 
     # -- Sideloads ---------------------------------------------------------
 
@@ -564,6 +599,8 @@ class Scheduler:
         )
         state = CommandState(command, parent_command, command.body(), self, binding)
 
+        self._emit(events.Scheduled, command)
+
         if ec.current_state() is not None:
             # Scheduling a child command while running: start it immediately
             # rather than waiting for the next run(), so deeply nested
@@ -626,6 +663,8 @@ class Scheduler:
             if scheduled_state.command.conflicts_with(command):
                 del self._queued_to_run[scheduled_command]
                 self._discard_unstarted_coroutine(scheduled_state)
+                self._emit(events.Interrupted, scheduled_command, command)
+                self._emit(events.Canceled, scheduled_command)
 
     def _evict_conflicting_running_commands(self, incoming_state: CommandState) -> None:
         conflicting_roots = set()
@@ -645,6 +684,9 @@ class Scheduler:
             conflicting_roots.add(root)
 
         for conflicting_state in conflicting_roots:
+            self._emit(
+                events.Interrupted, conflicting_state.command, incoming_state.command
+            )
             self.cancel(conflicting_state.command)
 
     def _is_ancestor_of(self, ancestor: Command, state: CommandState) -> bool:
@@ -697,6 +739,10 @@ class Scheduler:
             command.on_exit()
             command.on_cancel()
 
+        if was_running or queued_state is not None:
+            # Only when the scheduler actually knew about the command.
+            self._emit(events.Canceled, command)
+
         self._remove_orphaned_children(command)
 
     @staticmethod
@@ -735,9 +781,11 @@ class Scheduler:
         commands will be scheduled again on the next ``run()``, unless
         superseded by a higher-priority command scheduled first.
         """
-        for state in self._queued_to_run.values():
-            self._discard_unstarted_coroutine(state)
+        queued = list(self._queued_to_run.values())
         self._queued_to_run.clear()
+        for state in queued:
+            self._discard_unstarted_coroutine(state)
+            self._emit(events.Canceled, state.command)
 
         running = list(self._running_commands.items())
         self._running_commands.clear()
@@ -745,6 +793,7 @@ class Scheduler:
             self._cancel_coroutine(state)
             command.on_exit()
             command.on_cancel()
+            self._emit(events.Canceled, command)
 
     # -- Run loop --------------------------------------------------------
 
@@ -855,6 +904,7 @@ class Scheduler:
         fork_failure: ForkFailed | None = None
         error: BaseException | None = None
         with ec.mounted(state):
+            self._emit(events.Mounted, command)
             try:
                 coroutine.send(None)
             except StopIteration:
@@ -879,6 +929,7 @@ class Scheduler:
             return
 
         if fork_failure is not None:
+            self._report_fork_failure(command, fork_failure)
             if ec.current_state() is not None:
                 # This command was started from inside an ancestor's own run
                 # (a fork or await), so let the failure keep unwinding: it
@@ -891,8 +942,28 @@ class Scheduler:
 
         if done:
             command.on_exit()
+            self._emit(events.Completed, command)
             self._running_commands.pop(command, None)
             self._remove_orphaned_children(command)
+        else:
+            self._emit(events.Yielded, command)
+
+    def _report_fork_failure(self, command: Command, failure: ForkFailed) -> None:
+        # The failure propagates up through every ancestor's frame, but only
+        # the command whose fork actually failed reports it: it's the first
+        # frame to see it, so mark it as reported for the rest.
+        if failure._reported:
+            return
+        failure._reported = True
+        self._emit(
+            events.ForkFailure,
+            command,
+            tuple(
+                result
+                for result in failure.result.failed_commands
+                if isinstance(result, FailedScheduleResult)
+            ),
+        )
 
     def _handle_fork_failure(self, state: CommandState) -> None:
         # A command couldn't fork a child, so the whole composition comes
@@ -921,6 +992,9 @@ class Scheduler:
         root = self._root_of(command)
 
         self._running_commands.pop(command, None)
+        # Emitted before the children are canceled, so their Canceled events
+        # come after this one.
+        self._emit(events.CompletedWithError, command, error)
         self._remove_orphaned_children(command)
 
         # Record which command raised before re-raising. The execution context

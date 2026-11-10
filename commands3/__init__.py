@@ -61,6 +61,7 @@ from .scheduler import (
     Success,
     SuccessfulScheduleResult,
 )
+from .scheduler_event import SchedulerEvent
 from .sequential_group import SequentialGroupBuilder
 from .trigger import Trigger
 
@@ -99,6 +100,7 @@ __all__ = [
     "RobotModeScope",
     "ScheduleResult",
     "Scheduler",
+    "SchedulerEvent",
     "SequentialGroupBuilder",
     "StagedCommandBuilder",
     "Success",
@@ -119,6 +121,7 @@ __all__ = [
     "requires_self",
     "requiring",
     "robot_state_fetcher",
+    "scheduler_event",
     "throw_if_conflicts",
     "wait",
     "wait_until",

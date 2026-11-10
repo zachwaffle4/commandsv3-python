@@ -17,6 +17,7 @@ from commands3 import (
     Success,
     await_,
     park,
+    scheduler_event,
     wait_until,
 )
 
@@ -53,7 +54,10 @@ def test_mechanisms_are_not_controllable_during_disabled_by_default():
     assert not Mechanism("mech").controllable_during_disabled()
 
 
-def test_cancels_commands_when_robot_enters_disabled(scheduler, fake_fetcher):
+def test_cancels_commands_when_robot_enters_disabled(
+    scheduler, fake_fetcher, watch_events
+):
+    log = watch_events(scheduler)
     mech = DummyMechanism("mech", scheduler)
     command = mech.run(park).named("Command")
 
@@ -64,9 +68,13 @@ def test_cancels_commands_when_robot_enters_disabled(scheduler, fake_fetcher):
     fake_fetcher.enabled = False
     scheduler.run()
     assert scheduler.get_running_commands() == [], "Command was not canceled"
+    log.assert_canceled(command)
 
 
-def test_cancels_composition_when_robot_enters_disabled(scheduler, fake_fetcher):
+def test_cancels_composition_when_robot_enters_disabled(
+    scheduler, fake_fetcher, watch_events
+):
+    log = watch_events(scheduler)
     mech = DummyMechanism("mech", scheduler)
     child = mech.run(park).named("Child")
 
@@ -82,6 +90,8 @@ def test_cancels_composition_when_robot_enters_disabled(scheduler, fake_fetcher)
     fake_fetcher.enabled = False
     scheduler.run()
     assert scheduler.get_running_commands() == [], "Composition was not canceled"
+    log.assert_canceled(parent)
+    log.assert_canceled(child)
 
 
 def test_does_not_cancel_safe_commands(scheduler, fake_fetcher):
@@ -109,7 +119,10 @@ def test_cannot_schedule_unsafe_command_in_disabled(scheduler, fake_fetcher):
     assert not result.successful
 
 
-def test_cancels_composition_when_child_cannot_be_scheduled(scheduler, fake_fetcher):
+def test_cancels_composition_when_child_cannot_be_scheduled(
+    scheduler, fake_fetcher, watch_events
+):
+    log = watch_events(scheduler)
     mech = DummyMechanism("mech", scheduler)
     child = mech.run(park).named("Command")
 
@@ -128,6 +141,18 @@ def test_cancels_composition_when_child_cannot_be_scheduled(scheduler, fake_fetc
     assert scheduler.get_running_commands() == [], (
         "Entire composition should have been canceled"
     )
+    log.assert_event(
+        scheduler_event.ForkFailure,
+        lambda e: (
+            e.command is parent
+            and len(e.failures) == 1
+            and isinstance(e.failures[0], RequiresUnsafeMechanisms)
+            and e.failures[0].command is child
+            and e.failures[0].unsafe_mechanisms == frozenset({mech})
+        ),
+        "Parent should receive a ForkFailure event",
+    )
+    log.assert_canceled(parent)
 
 
 def test_can_schedule_safe_command_in_disabled(scheduler, fake_fetcher):
@@ -158,7 +183,8 @@ def test_unsafe_default_commands_cannot_run_in_disabled(scheduler, fake_fetcher)
     )
 
 
-def test_robot_disabled_between_queue_and_run(scheduler, fake_fetcher):
+def test_robot_disabled_between_queue_and_run(scheduler, fake_fetcher, watch_events):
+    log = watch_events(scheduler)
     mech = DummyMechanism("mech", scheduler)
     command = mech.run(park).named("Command")
 
@@ -172,6 +198,7 @@ def test_robot_disabled_between_queue_and_run(scheduler, fake_fetcher):
         "The command should have been canceled"
     )
     assert not scheduler.is_scheduled_or_running(command)
+    log.assert_canceled(command)
 
 
 def test_unsafe_default_command_resumes_when_robot_is_enabled(scheduler, fake_fetcher):

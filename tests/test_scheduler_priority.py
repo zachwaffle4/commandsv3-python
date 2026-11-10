@@ -26,6 +26,7 @@ from commands3 import (
     await_,
     fork,
     park,
+    scheduler_event,
 )
 
 
@@ -156,7 +157,8 @@ def test_inner_default_command_inherits_higher_parent_priority(scheduler):
     )
 
 
-def test_inner_trigger_command_inherits_higher_parent_priority(scheduler):
+def test_inner_trigger_command_inherits_higher_parent_priority(scheduler, watch_events):
+    log = watch_events(scheduler)
     mechanism = DummyMechanism()
 
     higher_priority = _priority_command(200, mechanism, "Higher")
@@ -182,6 +184,11 @@ def test_inner_trigger_command_inherits_higher_parent_priority(scheduler):
 
     assert scheduler.get_running_commands() == [parent, low_priority_child], (
         "a trigger-bound child should inherit its parent's priority"
+    )
+    log.assert_event(
+        scheduler_event.Interrupted,
+        lambda e: e.interrupter is low_priority_child and e.command is higher_priority,
+        "the higher-priority command should have been interrupted by the trigger-bound child",
     )
 
 
@@ -237,7 +244,8 @@ def test_conflicting_children_higher_priority_parent_wins(scheduler):
 
 
 @single_child_ops
-def test_unschedulable_child_cancels_parent(scheduler, operation):
+def test_unschedulable_child_cancels_parent(scheduler, operation, watch_events):
+    log = watch_events(scheduler)
     mechanism = DummyMechanism()
 
     high_priority = _priority_command(512, mechanism, "High")
@@ -255,6 +263,18 @@ def test_unschedulable_child_cancels_parent(scheduler, operation):
     assert not scheduler.is_running(parent), "the parent should have been canceled"
     assert scheduler.is_running(high_priority)
     assert not scheduler.is_scheduled_or_running(default_priority)
+    log.assert_canceled(parent)
+    log.assert_event(
+        scheduler_event.ForkFailure,
+        lambda e: (
+            e.command is parent
+            and len(e.failures) == 1
+            and isinstance(e.failures[0], LowerPriorityThanRunningCommand)
+            and e.failures[0].command is default_priority
+            and e.failures[0].already_running is high_priority
+        ),
+        "the parent should have failed to fork",
+    )
 
 
 @single_child_ops
@@ -322,7 +342,10 @@ def _assert_fork_failure(
 
 
 @single_child_ops
-def test_unschedulable_child_cancels_entire_composition(scheduler, operation):
+def test_unschedulable_child_cancels_entire_composition(
+    scheduler, operation, watch_events
+):
+    log = watch_events(scheduler)
     mechanism = DummyMechanism()
 
     high_priority = _priority_command(512, mechanism, "High")
@@ -359,10 +382,26 @@ def test_unschedulable_child_cancels_entire_composition(scheduler, operation):
     assert scheduler.is_running(high_priority), (
         "the higher priority command should still be running"
     )
+    # Only the command that failed to fork gets a ForkFailure event. Every
+    # command in the composition still gets a cancellation event, though,
+    # including the one that failed.
+    log.assert_event(
+        scheduler_event.ForkFailure,
+        lambda e: (
+            e.command is current
+            and len(e.failures) == 1
+            and isinstance(e.failures[0], LowerPriorityThanRunningCommand)
+            and e.failures[0].command is unschedulable
+            and e.failures[0].already_running is high_priority
+        ),
+        "the current command should have received a ForkFailure event",
+    )
+    assert len(log.of_type(scheduler_event.ForkFailure)) == 1
     for command in (grandparent, parent, current, child, grandchild):
         assert not scheduler.is_scheduled_or_running(command), (
             f"{command.name} should have been canceled"
         )
+        log.assert_canceled(command)
 
 
 @multi_child_ops

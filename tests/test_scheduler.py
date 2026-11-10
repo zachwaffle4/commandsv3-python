@@ -318,7 +318,8 @@ async def _park_body():
     await park()
 
 
-def test_any_of_does_not_cancel_rescheduled_command(scheduler):
+def test_any_of_does_not_cancel_rescheduled_command(scheduler, watch_events):
+    log = watch_events(scheduler)
     ran_after_await = False
     c1 = Command.no_requirements(_park_body).named("C1")
     c2 = Command.no_requirements(_park_body).named("C2")
@@ -342,6 +343,7 @@ def test_any_of_does_not_cancel_rescheduled_command(scheduler):
 
     assert ran_after_await
     assert scheduler.get_running_commands() == [parent, c1]
+    log.assert_canceled(c2)
 
 
 def test_all_of_does_not_wait_on_rescheduled_command(scheduler):

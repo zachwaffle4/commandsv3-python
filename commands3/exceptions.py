@@ -52,6 +52,11 @@ class ForkFailed(CommandCancelled):
 
     def __init__(self, result: ForkResult) -> None:
         self.result = result
+        # Set by the scheduler once it has emitted this failure's
+        # ``ForkFailure`` event. The exception then unwinds through every
+        # ancestor's frame, and only the command that failed to fork may
+        # report it.
+        self._reported = False
 
         failures = ", ".join(
             f"{failure.command.name} ({type(failure).__name__})"

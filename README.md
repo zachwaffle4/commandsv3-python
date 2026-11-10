@@ -146,7 +146,8 @@ Not ported yet, listed by their Java names:
   `CommandJoystick`, and the rest of the `button` package)
 - `StateMachine`
 - `SysIdRoutine`
-- Scheduler event listeners (`SchedulerEvent`) and scheduler telemetry
+- Scheduler protobuf telemetry (event listeners via `Scheduler.add_event_listener()`
+  are available)
 
 ## License
 

@@ -40,6 +40,7 @@ _stack: list[CommandState] = []
 # enough for ``fork()`` and friends to find the scheduler to use.
 _sideload_schedulers: list[Scheduler] = []
 
+
 @contextlib.contextmanager
 def mounted(state: CommandState) -> Generator[None]:
     """
@@ -52,6 +53,7 @@ def mounted(state: CommandState) -> Generator[None]:
         yield
     finally:
         _stack.pop()
+
 
 @contextlib.contextmanager
 def sideloading(scheduler: Scheduler) -> Generator[None]:
