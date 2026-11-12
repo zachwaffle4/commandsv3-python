@@ -143,7 +143,6 @@ underscore where the Java name is a Python keyword (`await_`, `yield_`,
 Not ported yet, listed by their Java names:
 
 - `StateMachine`
-- `SysIdRoutine`
 - Scheduler protobuf telemetry (event listeners via `Scheduler.add_event_listener()`
   are available)
 

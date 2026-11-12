@@ -86,6 +86,7 @@ from .button import (  # isort: skip
     NetworkButton,
     POVButton,
 )
+from .sysid import SysIdRoutine  # isort: skip
 
 __all__ = [
     "AUTONOMOUS_MODE_SCOPE",
@@ -145,6 +146,7 @@ __all__ = [
     "StagedCommandBuilder",
     "Success",
     "SuccessfulScheduleResult",
+    "SysIdRoutine",
     "TeleopMode",
     "Trigger",
     "UtilityMode",
