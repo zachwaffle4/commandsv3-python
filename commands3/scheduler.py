@@ -32,7 +32,12 @@ from . import (
 from .binding import Binding
 from .coroutine import yield_
 from .event_loop import EventLoop
-from .exceptions import CommandCancelled, ForkFailed, _attribute_to_command
+from .exceptions import (
+    CommandCancelled,
+    ForkFailed,
+    _attribute_to_command,
+    failing_command,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable
@@ -899,6 +904,27 @@ class Scheduler:
             # Probably canceled by an owning composition; do not run.
             return
 
+        resume_when = state.resume_when
+        if resume_when is not None:
+            # The command suspended itself waiting on something. Don't resume
+            # it, or emit a Mounted/Yielded pair for it, until that's true.
+            try:
+                ready = resume_when()
+            except Exception as e:  # noqa: BLE001 - same reasoning as below
+                # The condition is user code, and it ran here rather than
+                # inside the command. Report it the way an error raised by
+                # the command's own body would be, so it's still attributed
+                # to the command. The coroutine is suspended, so close it
+                # (running any `finally` blocks) rather than leaving it to
+                # be collected.
+                state.finished = True
+                state.coroutine.close()
+                self._handle_command_exception(state, e)
+                return
+            if not ready:
+                return
+            state.resume_when = None
+
         start = wpilib.RobotController.get_time()
         done = False
         fork_failure: ForkFailed | None = None
@@ -991,16 +1017,35 @@ class Scheduler:
         # running set, since get_parent_of() reads from that set.
         root = self._root_of(command)
 
-        self._running_commands.pop(command, None)
-        # Emitted before the children are canceled, so their Canceled events
-        # come after this one.
-        self._emit(events.CompletedWithError, command, error)
-        self._remove_orphaned_children(command)
+        origin = failing_command(error)
+        if origin is not None and origin is not command:
+            # Not this command's own failure: a descendant raised it, already
+            # reported it, and it is unwinding through this command's frames.
+            # This command comes down with the composition. Its coroutine has
+            # already terminated, so cancel() skips throwing into it and just
+            # runs its hooks, emits Canceled and cancels its remaining
+            # children.
+            self.cancel(command)
+        else:
+            self._running_commands.pop(command, None)
+            # Emitted before the children are canceled, so their Canceled
+            # events come after this one.
+            self._emit(events.CompletedWithError, command, error)
+            self._remove_orphaned_children(command)
 
-        # Record which command raised before re-raising. The execution context
-        # is unwound by the time `run()`'s caller can catch this, so the
-        # exception itself is the only channel that survives.
-        _attribute_to_command(error, command, root)
+            # Record which command raised before re-raising. The execution
+            # context is unwound by the time `run()`'s caller can catch this,
+            # so the exception itself is the only channel that survives.
+            _attribute_to_command(error, command, root)
+
+        if ec.current_state() is not None:
+            # This command was started from inside an ancestor's own run (a
+            # fork or await), and that ancestor is mounted, so it can't be
+            # canceled from here: cancel() would have to throw into a
+            # coroutine that is mid-execution. Let the error keep unwinding
+            # instead. It tears down each ancestor's frames in turn, and the
+            # outermost one, which isn't nested, cancels the root below.
+            raise error
 
         if root is not None and root is not command:
             self.cancel(root)
@@ -1085,6 +1130,7 @@ class CommandState:
         "id",
         "last_runtime_ms",
         "parent",
+        "resume_when",
         "scheduler",
         "total_runtime_ms",
     )
@@ -1109,6 +1155,12 @@ class CommandState:
         #: Whether the coroutine has terminated on its own, and so must not
         #: be thrown into again.
         self.finished = False
+        #: Set by a coroutine primitive (``wait``, ``wait_until``, ``await_``,
+        #: ``park``...) just before it suspends, so the scheduler can leave
+        #: the command alone until this returns true. ``None`` means the
+        #: command is live and is resumed on every tick. The scheduler clears
+        #: it when it resumes the command.
+        self.resume_when: Callable[[], bool] | None = None
 
         # Not thread-safe - fine, since the framework is single-threaded only.
         CommandState._last_id += 1

@@ -50,6 +50,11 @@ async def _park_body():
     await park()
 
 
+async def _yield_forever_body():
+    while True:
+        await yield_()
+
+
 def _summary(log):
     # (event class name, command name) pairs, for comparing whole histories.
     return [(type(e).__name__, e.command.name) for e in log.events]
@@ -89,7 +94,9 @@ def test_yielding_command_emits_mounted_and_yielded_each_tick(scheduler, log):
 
 
 def test_events_carry_nondecreasing_integer_timestamps(scheduler, log):
-    scheduler.schedule(Command.no_requirements(_park_body).named("A"))
+    # Yields every tick rather than parking: a parked command isn't resumed,
+    # so it stops producing events after the first tick.
+    scheduler.schedule(Command.no_requirements(_yield_forever_body).named("A"))
     scheduler.run()
     scheduler.run()
 

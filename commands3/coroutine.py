@@ -86,6 +86,33 @@ def yield_() -> _YieldTick:
     return _YIELD_TICK
 
 
+async def _suspend_until(condition: Callable[[], bool]) -> None:
+    """
+    Suspends the current command until ``condition`` is true, telling the
+    scheduler so it can skip the command in the meantime.
+
+    A command suspended with a plain ``yield_()`` is resumed on every tick,
+    which costs a ``Mounted``/``Yielded`` event pair and a coroutine switch
+    even when the command immediately yields again. A command suspended here
+    isn't resumed at all until the scheduler has checked ``condition`` and
+    found it true, so the helpers that wait on something (``wait``,
+    ``wait_until``, ``await_``, ``park``...) don't cost that while they wait.
+
+    The scheduler only resumes the command once ``condition`` is true, but
+    callers still re-check what they were waiting for after this returns, so
+    they don't depend on that. A sideload has no state for the scheduler to
+    consult, so there this is just a one-tick yield.
+    """
+    state = _ec.current_state()
+    if state is not None:
+        state.resume_when = condition
+    await yield_()
+
+
+def _never() -> bool:
+    return False
+
+
 async def wait(seconds: wpimath.units.seconds) -> None:
     """
     Waits for the given duration to elapse before returning. Returns
@@ -102,7 +129,7 @@ async def wait(seconds: wpimath.units.seconds) -> None:
     timer = wpilib.Timer()
     timer.start()
     while not timer.has_elapsed(seconds):
-        await yield_()
+        await _suspend_until(lambda: timer.has_elapsed(seconds))
 
 
 class WaitResult(enum.Enum):
@@ -135,7 +162,7 @@ async def wait_until(
     """
     if timeout is None:
         while not condition():
-            await yield_()
+            await _suspend_until(condition)
         return WaitResult.CONDITION_MET
 
     timer = wpilib.Timer()
@@ -143,7 +170,9 @@ async def wait_until(
     while not condition():
         if timer.has_elapsed(timeout):
             return WaitResult.TIMED_OUT
-        await yield_()
+        # Resumed when either happens; the loop above then sorts out which,
+        # checking the condition first so it wins a tie.
+        await _suspend_until(lambda: condition() or timer.has_elapsed(timeout))
     return WaitResult.CONDITION_MET
 
 
@@ -157,7 +186,7 @@ async def park() -> None:
     never set, awaited with no timeout.
     """
     while True:
-        await yield_()
+        await _suspend_until(_never)
 
 
 @dataclass(frozen=True)
@@ -219,7 +248,11 @@ class ForkResult:
         """
         for command, run_id in zip(self.forked_commands, self.run_ids, strict=True):
             while _same_run(self.scheduler, command, run_id):
-                await yield_()
+                await _suspend_until(
+                    lambda command=command, run_id=run_id: (
+                        not _same_run(self.scheduler, command, run_id)
+                    )
+                )
 
 
 def _same_run(scheduler: Scheduler, command: Command, run_id: int) -> bool:
@@ -365,7 +398,7 @@ async def await_(
     while _same_run(scheduler, command, run_id):
         # A one-shot command runs to completion within the schedule call
         # above, leaving run_id at 0 and nothing to await.
-        await yield_()
+        await _suspend_until(lambda: not _same_run(scheduler, command, run_id))
 
     return ForkResult(scheduler, (command,), (), (run_id,))
 
@@ -398,11 +431,13 @@ async def all_of(
     if result.failed:
         return result
 
-    while any(
-        _same_run(scheduler, command, run_id)
-        for command, run_id in zip(result.forked_commands, result.run_ids, strict=True)
-    ):
-        await yield_()
+    runs = list(zip(result.forked_commands, result.run_ids, strict=True))
+
+    def any_running() -> bool:
+        return any(_same_run(scheduler, command, run_id) for command, run_id in runs)
+
+    while any_running():
+        await _suspend_until(lambda: not any_running())
 
     return result
 
@@ -437,8 +472,12 @@ async def any_of(
         return result
 
     runs = list(zip(result.forked_commands, result.run_ids, strict=True))
-    while all(_same_run(scheduler, command, run_id) for command, run_id in runs):
-        await yield_()
+
+    def all_running() -> bool:
+        return all(_same_run(scheduler, command, run_id) for command, run_id in runs)
+
+    while all_running():
+        await _suspend_until(lambda: not all_running())
 
     # At least one command exited; cancel the rest. A command that exited and
     # was rescheduled elsewhere is a different run and is left alone.
