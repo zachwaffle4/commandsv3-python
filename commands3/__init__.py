@@ -65,6 +65,17 @@ from .scheduler_event import SchedulerEvent
 from .sequential_group import SequentialGroupBuilder
 from .trigger import Trigger
 
+# Imported last: the button classes subclass or construct Trigger.
+from .button import (  # isort: skip
+    CommandGamepad,
+    CommandGenericHID,
+    CommandJoystick,
+    InternalButton,
+    JoystickButton,
+    NetworkButton,
+    POVButton,
+)
+
 __all__ = [
     "AUTONOMOUS_MODE_SCOPE",
     "DEFAULT_PRIORITY",
@@ -81,6 +92,9 @@ __all__ = [
     "Command",
     "CommandBody",
     "CommandCancelled",
+    "CommandGamepad",
+    "CommandGenericHID",
+    "CommandJoystick",
     "CommandState",
     "Conflict",
     "EventLoop",
@@ -90,11 +104,15 @@ __all__ = [
     "ForkFailed",
     "ForkResult",
     "GlobalScope",
+    "InternalButton",
+    "JoystickButton",
     "LowerPriorityThanQueuedCommand",
     "LowerPriorityThanRunningCommand",
     "Mechanism",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
+    "NetworkButton",
+    "POVButton",
     "ParallelGroupBuilder",
     "RequiresUnsafeMechanisms",
     "RobotModeScope",
