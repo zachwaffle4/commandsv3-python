@@ -142,10 +142,6 @@ underscore where the Java name is a Python keyword (`await_`, `yield_`,
 
 Not ported yet, listed by their Java names:
 
-- The generated per-controller bindings (`CommandXboxController`,
-  `CommandDualSenseController`, and the rest). `CommandGenericHID`,
-  `CommandGamepad`, `CommandJoystick`, `JoystickButton`, `POVButton`,
-  `NetworkButton` and `InternalButton` are available in `commands3.button`.
 - `StateMachine`
 - `SysIdRoutine`
 - Scheduler protobuf telemetry (event listeners via `Scheduler.add_event_listener()`

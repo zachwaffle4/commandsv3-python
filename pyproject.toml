@@ -10,12 +10,13 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 dependencies = [
-    "robotpy>=2027.0.0a7",
-    "wpilib>=2027.0.0a7",
+    "robotpy>=2027.0.0a8",
+    "wpilib>=2027.0.0a8",
 ]
 
 [dependency-groups]
 dev = [
+    "jinja2>=3.1.6",
     "pytest>=8",
     "ruff>=0.16.7",
     "ty>=0.0.81",
