@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .command import Command
     from .coroutine import ForkResult
+    from .scheduler import Scheduler
 
 __all__ = ["CommandCancelled", "ForkFailed", "failing_command"]
 
@@ -32,6 +33,37 @@ class CommandCancelled(BaseException):
     that a broad ``except Exception:`` in a command body won't accidentally
     swallow cancellation and keep the command running.
     """
+
+
+class _CancelRequested(CommandCancelled):
+    """
+    Raised at the call site of ``Scheduler.cancel()`` or
+    ``Scheduler.cancel_all()`` when something that has to be canceled is
+    mounted - on the call stack, in the middle of running.
+
+    The scheduler cancels a command by throwing ``CommandCancelled`` into its
+    coroutine, which can't be done to a coroutine that's already executing.
+    So the request unwinds the stack instead, the way a fork failure does:
+    each command's frames exit (running their ``try/finally`` blocks), each
+    ``Scheduler._run_command()`` frame lets it keep going, and the frame of
+    the target performs the actual cancellation. That makes the call not
+    return, so a command that cancels itself stops at that line.
+
+    Private, because user code is meant to call ``cancel()``, not to raise or
+    catch this. It is a ``CommandCancelled``, so a broad ``except Exception``
+    won't swallow it either.
+
+    :ivar target: the command to cancel, or ``None`` for ``cancel_all()``.
+    :ivar scheduler: for ``cancel_all()``, the scheduler to cancel everything
+        on.
+    """
+
+    def __init__(
+        self, target: Command | None = None, scheduler: Scheduler | None = None
+    ) -> None:
+        self.target = target
+        self.scheduler = scheduler
+        super().__init__("cancel_all()" if target is None else f"cancel({target.name})")
 
 
 class ForkFailed(CommandCancelled):

@@ -36,6 +36,7 @@ from .exceptions import (
     CommandCancelled,
     ForkFailed,
     _attribute_to_command,
+    _CancelRequested,
     failing_command,
 )
 
@@ -719,13 +720,18 @@ class Scheduler:
         command's body before its ``on_cancel`` hook, so cleanup can go in
         either place.
 
-        :raises ValueError: if ``command`` is the command currently
-            executing - a command can't cancel itself while running.
+        A command can cancel itself, or an ancestor that is waiting on it
+        (for example a child ending the whole composition it belongs to). That
+        call doesn't return: the stack unwinds down to the command being
+        canceled, running ``try/finally`` blocks on the way, and then it is
+        canceled as usual - ``on_exit``, then ``on_cancel``, a ``Canceled``
+        event, and its children canceled with it. A command that cancels
+        itself doesn't cancel its parent.
         """
-        if command is ec.current_command():
-            raise ValueError(
-                f"Command `{command.name}` is mounted and cannot be canceled"
-            )
+        if ec.is_mounted(command):
+            # It's executing right now, so there's no coroutine to throw into.
+            # Unwind to it instead; see _CancelRequested.
+            raise _CancelRequested(command)
 
         state = self._running_commands.pop(command, None)
         was_running = state is not None
@@ -785,7 +791,16 @@ class Scheduler:
         Cancels every currently scheduled and running command. Any default
         commands will be scheduled again on the next ``run()``, unless
         superseded by a higher-priority command scheduled first.
+
+        Called from inside a running command, this cancels that command too,
+        and the call doesn't return; see ``cancel()``.
         """
+        if ec.has_mounted_command_of(self):
+            # Some of those commands are executing right now, and the rest
+            # can wait: unwind to the outermost of them, which then cancels
+            # everything. See _CancelRequested.
+            raise _CancelRequested(None, self)
+
         queued = list(self._queued_to_run.values())
         self._queued_to_run.clear()
         for state in queued:
@@ -928,6 +943,7 @@ class Scheduler:
         start = wpilib.RobotController.get_time()
         done = False
         fork_failure: ForkFailed | None = None
+        cancel_request: _CancelRequested | None = None
         error: BaseException | None = None
         with ec.mounted(state):
             self._emit(events.Mounted, command)
@@ -938,6 +954,9 @@ class Scheduler:
             except ForkFailed as e:
                 # Must precede CommandCancelled - ForkFailed subclasses it.
                 fork_failure = e
+            except _CancelRequested as e:
+                # Likewise.
+                cancel_request = e
             except CommandCancelled:
                 done = True
             except Exception as e:  # noqa: BLE001 - deliberately broad, see below
@@ -948,10 +967,19 @@ class Scheduler:
         # Record that the coroutine is spent before any cancellation path
         # below can try to throw into it. Set here rather than in each branch
         # so it's also set on the frames a ForkFailed re-raise unwinds.
-        state.finished = done or error is not None or fork_failure is not None
+        state.finished = (
+            done
+            or error is not None
+            or fork_failure is not None
+            or cancel_request is not None
+        )
 
         if error is not None:
             self._handle_command_exception(state, error)
+            return
+
+        if cancel_request is not None:
+            self._handle_cancel_request(state, cancel_request)
             return
 
         if fork_failure is not None:
@@ -990,6 +1018,36 @@ class Scheduler:
                 if isinstance(result, FailedScheduleResult)
             ),
         )
+
+    def _handle_cancel_request(
+        self, state: CommandState, request: _CancelRequested
+    ) -> None:
+        # A cancel() or cancel_all() call found something it needed to cancel
+        # mounted, and unwound the stack up to here instead. This command's
+        # coroutine has terminated; see whether this is where the cancellation
+        # actually happens.
+        command = state.command
+
+        if request.target is None:
+            # cancel_all(): keep unwinding until the outermost of this
+            # scheduler's commands, then cancel everything from there. A
+            # request for another scheduler just passes through.
+            if request.scheduler is not self or ec.has_mounted_command_of(self):
+                raise request
+            self.cancel_all()
+            return
+
+        if request.target is not command:
+            # A descendant of the target. It is torn down with the target,
+            # whose cancellation cancels its children, so just keep going.
+            raise request
+
+        # This is the target, and it is no longer mounted, so a normal
+        # cancellation can run: its coroutine is spent, so this skips
+        # throwing into it and goes straight to on_exit, on_cancel, the
+        # Canceled event, and canceling its children. Its parent, if any, is
+        # untouched.
+        self.cancel(command)
 
     def _handle_fork_failure(self, state: CommandState) -> None:
         # A command couldn't fork a child, so the whole composition comes

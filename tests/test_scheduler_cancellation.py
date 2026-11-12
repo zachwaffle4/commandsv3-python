@@ -407,3 +407,336 @@ def test_runs_on_exit_when_canceling_and_when_interrupting(scheduler):
     scheduler.schedule(interrupter)
     scheduler.run()
     assert "on_exit" in interrupted_calls
+
+
+# -- Canceling a command that is executing ---------------------------------
+#
+# A mounted command has no coroutine to throw into, so cancel() unwinds the
+# stack down to it instead and the call doesn't return.
+
+
+def _hooked(body, calls, name):
+    return (
+        Command.no_requirements(body)
+        .when_exited(lambda: calls.append(f"{name}.on_exit"))
+        .when_canceled(lambda: calls.append(f"{name}.on_cancel"))
+        .named(name)
+    )
+
+
+def test_a_command_can_cancel_itself(scheduler, watch_events):
+    log = watch_events(scheduler)
+    ran_after = []
+
+    async def body():
+        scheduler.cancel(command)
+        ran_after.append(True)
+
+    command = Command.no_requirements(body).named("Self-Canceling Command")
+    scheduler.schedule(command)
+    scheduler.run()  # must not raise
+
+    assert ran_after == [], "the command should stop at the cancel() call"
+    log.assert_canceled(command)
+    assert not scheduler.is_scheduled_or_running(command)
+
+
+def test_canceling_itself_emits_canceled_and_nothing_else(scheduler, watch_events):
+    log = watch_events(scheduler)
+
+    async def body():
+        scheduler.cancel(command)
+
+    command = Command.no_requirements(body).named("Self-Canceling Command")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert [type(e).__name__ for e in log.events] == [
+        "Scheduled",
+        "Mounted",
+        "Canceled",
+    ]
+
+
+def test_canceling_itself_cancels_its_children(scheduler, watch_events):
+    log = watch_events(scheduler)
+    child = Command.no_requirements(_park_body).named("Child")
+
+    async def body():
+        fork(child)
+        scheduler.cancel(command)
+
+    command = Command.no_requirements(body).named("Self-Canceling Command")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    log.assert_canceled(command)
+    log.assert_canceled(child)
+    assert not scheduler.is_scheduled_or_running(child)
+
+
+def test_canceling_itself_does_not_cancel_its_parent(scheduler, watch_events):
+    log = watch_events(scheduler)
+
+    async def self_canceler_body():
+        scheduler.cancel(self_canceler)
+
+    self_canceler = Command.no_requirements(self_canceler_body).named("Self-Canceler")
+
+    async def parent_body():
+        await await_(self_canceler)
+        await park()
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    log.assert_canceled(self_canceler)
+    assert scheduler.get_running_commands() == [parent]
+
+
+def test_canceling_itself_runs_finally_blocks_then_on_exit_then_on_cancel(scheduler):
+    calls = []
+
+    async def body():
+        try:
+            scheduler.cancel(command)
+        finally:
+            calls.append("finally")
+
+    command = _hooked(body, calls, "cmd")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert calls == ["finally", "cmd.on_exit", "cmd.on_cancel"]
+
+
+def test_canceling_itself_is_not_swallowed_by_except_exception(scheduler):
+    swallowed = []
+    ran_after = []
+
+    async def body():
+        try:
+            scheduler.cancel(command)
+        except Exception as e:  # noqa: BLE001
+            swallowed.append(e)
+        ran_after.append(True)
+
+    command = Command.no_requirements(body).named("Self-Canceling Command")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert swallowed == []
+    assert ran_after == []
+    assert not scheduler.is_scheduled_or_running(command)
+
+
+def test_a_helper_coroutine_can_cancel_the_command_that_awaits_it(scheduler):
+    ran_after = []
+
+    async def helper():
+        scheduler.cancel(command)
+        ran_after.append("helper")
+
+    async def body():
+        await helper()
+        ran_after.append("body")
+
+    command = Command.no_requirements(body).named("Command")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert ran_after == []
+    assert not scheduler.is_scheduled_or_running(command)
+
+
+def test_a_child_can_cancel_its_parent(scheduler, watch_events):
+    log = watch_events(scheduler)
+    calls = []
+
+    async def child_body():
+        scheduler.cancel(parent)
+        calls.append("child ran after cancel")
+
+    child = _hooked(child_body, calls, "child")
+
+    async def parent_body():
+        try:
+            await await_(child)
+            calls.append("parent ran after child")
+        finally:
+            calls.append("parent finally")
+
+    parent = _hooked(parent_body, calls, "parent")
+    scheduler.schedule(parent)
+    scheduler.run()  # must not raise
+
+    assert scheduler.get_running_commands() == []
+    log.assert_canceled(parent)
+    log.assert_canceled(child)
+    assert calls == [
+        "parent finally",
+        "parent.on_exit",
+        "parent.on_cancel",
+        "child.on_exit",
+        "child.on_cancel",
+    ]
+
+
+def test_a_grandchild_can_cancel_its_grandparent(scheduler, watch_events):
+    log = watch_events(scheduler)
+    calls = []
+
+    async def grandchild_body():
+        scheduler.cancel(grandparent)
+
+    grandchild = _hooked(grandchild_body, calls, "grandchild")
+
+    async def child_body():
+        try:
+            await await_(grandchild)
+        finally:
+            calls.append("child finally")
+
+    child = _hooked(child_body, calls, "child")
+
+    async def grandparent_body():
+        try:
+            await await_(child)
+        finally:
+            calls.append("grandparent finally")
+
+    grandparent = _hooked(grandparent_body, calls, "grandparent")
+    scheduler.schedule(grandparent)
+    scheduler.run()
+
+    assert scheduler.get_running_commands() == []
+    for command in (grandparent, child, grandchild):
+        log.assert_canceled(command)
+    # Every frame on the way up unwound, innermost first.
+    assert calls.index("child finally") < calls.index("grandparent finally")
+    for name in ("grandparent", "child", "grandchild"):
+        assert calls.count(f"{name}.on_exit") == 1
+        assert calls.count(f"{name}.on_cancel") == 1
+
+
+def test_canceling_an_ancestor_cancels_its_other_children(scheduler):
+    sibling = Command.no_requirements(_park_body).named("Sibling")
+
+    async def child_body():
+        scheduler.cancel(parent)
+
+    child = Command.no_requirements(child_body).named("Child")
+
+    async def parent_body():
+        fork(sibling)
+        await await_(child)
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    assert scheduler.get_running_commands() == []
+
+
+def test_canceling_a_command_that_is_not_executing_still_returns(scheduler):
+    # Only a command that's on the stack has to be unwound to.
+    after = []
+    child = Command.no_requirements(_park_body).named("Child")
+
+    async def body():
+        fork(child)
+        scheduler.cancel(child)
+        after.append("ran after cancel")
+        await park()
+
+    parent = Command.no_requirements(body).named("Parent")
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    assert after == ["ran after cancel"]
+    assert scheduler.get_running_commands() == [parent]
+
+
+def test_cancel_all_inside_a_command_cancels_it_and_everything_else(
+    scheduler, watch_events
+):
+    log = watch_events(scheduler)
+    calls = []
+    other = _hooked(_park_body, calls, "other")
+    queued = Command.no_requirements(_park_body).named("Queued")
+
+    async def body():
+        fork(other)
+        scheduler.schedule(queued)
+        try:
+            scheduler.cancel_all()
+            calls.append("ran after cancel_all")
+        finally:
+            calls.append("finally")
+
+    stopper = _hooked(body, calls, "stopper")
+    scheduler.schedule(stopper)
+    scheduler.run()  # must not raise
+
+    assert scheduler.get_running_commands() == []
+    assert not scheduler.is_scheduled_or_running(queued)
+    for command in (stopper, other, queued):
+        log.assert_canceled(command)
+    assert "ran after cancel_all" not in calls
+    assert calls.count("finally") == 1
+    assert calls.count("stopper.on_cancel") == 1
+    assert calls.count("other.on_cancel") == 1
+
+
+def test_cancel_all_from_a_nested_child_cancels_the_whole_composition(
+    scheduler, watch_events
+):
+    log = watch_events(scheduler)
+    bystander = Command.no_requirements(_park_body).named("Bystander")
+
+    async def child_body():
+        scheduler.cancel_all()
+
+    child = Command.no_requirements(child_body).named("Child")
+
+    async def parent_body():
+        await await_(child)
+        await park()
+
+    parent = Command.no_requirements(parent_body).named("Parent")
+    scheduler.schedule(bystander)
+    scheduler.schedule(parent)
+    scheduler.run()
+
+    assert scheduler.get_running_commands() == []
+    for command in (bystander, parent, child):
+        log.assert_canceled(command)
+
+
+def test_cancel_all_called_from_outside_a_command_is_unchanged(scheduler):
+    first = Command.no_requirements(_park_body).named("First")
+    second = Command.no_requirements(_park_body).named("Second")
+    scheduler.schedule(first)
+    scheduler.schedule(second)
+    scheduler.run()
+
+    scheduler.cancel_all()
+
+    assert scheduler.get_running_commands() == []
+
+
+def test_cancel_all_inside_one_scheduler_leaves_another_alone(scheduler):
+    other_scheduler = Scheduler.create_independent_scheduler()
+    bystander = Command.no_requirements(_park_body).named("Bystander")
+    other_scheduler.schedule(bystander)
+    other_scheduler.run()
+
+    async def body():
+        scheduler.cancel_all()
+
+    scheduler.schedule(Command.no_requirements(body).named("Stopper"))
+    scheduler.run()
+
+    assert scheduler.get_running_commands() == []
+    assert other_scheduler.get_running_commands() == [bystander]

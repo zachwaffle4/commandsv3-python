@@ -27,6 +27,8 @@ __all__ = [
     "cancels_on_fork_failure_by_default",
     "current_command",
     "current_state",
+    "has_mounted_command_of",
+    "is_mounted",
     "mounted",
     "require_current_scheduler",
     "require_current_state",
@@ -79,6 +81,19 @@ def current_command() -> Command | None:
     """The command currently executing, or ``None`` if none is."""
     state = current_state()
     return state.command if state is not None else None
+
+
+def is_mounted(command: Command) -> bool:
+    """
+    Whether ``command`` is executing right now: the current command, or an
+    ancestor of it that's waiting on the stack for the current one to return.
+    """
+    return any(state.command is command for state in _stack)
+
+
+def has_mounted_command_of(scheduler: Scheduler) -> bool:
+    """Whether any command run by ``scheduler`` is executing right now."""
+    return any(state.scheduler is scheduler for state in _stack)
 
 
 def require_current_state() -> CommandState:

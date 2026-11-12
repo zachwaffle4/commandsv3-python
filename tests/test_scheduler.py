@@ -172,23 +172,6 @@ def test_cancel_runs_finally_block_in_command_body(scheduler):
     assert cleanup == [True]
 
 
-def test_cannot_cancel_the_currently_mounted_command(scheduler):
-    m = DummyMechanism()
-    captured = {}
-
-    async def body():
-        captured["command"] = command
-        with pytest.raises(ValueError):
-            scheduler.cancel(command)
-        await yield_()
-
-    command = Command.requiring(m).executing(body).named("SelfCancel")
-    scheduler.schedule(command)
-    scheduler.run()
-
-    assert captured["command"] is command
-
-
 def test_fork_starts_child_in_the_same_tick(scheduler):
     m1 = DummyMechanism("m1")
     m2 = DummyMechanism("m2")
