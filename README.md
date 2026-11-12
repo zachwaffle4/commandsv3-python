@@ -118,6 +118,10 @@ See [`examples/`](examples/) for a complete robot.
 - **`yield_()`, `wait()`, `wait_until()`, `fork()`, `await_()`, `all_of()`,
   `any_of()`** are the coroutine helpers you use inside a command body to
   give up control for a tick, pause, and run other commands.
+- **`StateMachine`** declares a set of states, each running a command, and the
+  transitions between them: `state.switch_to(other).when(condition)` or
+  `.when_complete()`. It's a builder; `machine.build()` returns the
+  `Command` to schedule.
 
 ## Differences from the Java version
 
@@ -142,7 +146,6 @@ underscore where the Java name is a Python keyword (`await_`, `yield_`,
 
 Not ported yet, listed by their Java names:
 
-- `StateMachine`
 - Scheduler protobuf telemetry (event listeners via `Scheduler.add_event_listener()`
   are available)
 

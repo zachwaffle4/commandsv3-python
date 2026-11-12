@@ -63,6 +63,11 @@ from .scheduler import (
 )
 from .scheduler_event import SchedulerEvent
 from .sequential_group import SequentialGroupBuilder
+from .state_machine import (
+    StateMachine,
+    TransitionNeedsConditionStage,
+    TransitionNeedsTargetStage,
+)
 from .trigger import Trigger
 
 # Imported last: the button classes subclass or construct Trigger.
@@ -144,10 +149,13 @@ __all__ = [
     "SchedulerEvent",
     "SequentialGroupBuilder",
     "StagedCommandBuilder",
+    "StateMachine",
     "Success",
     "SuccessfulScheduleResult",
     "SysIdRoutine",
     "TeleopMode",
+    "TransitionNeedsConditionStage",
+    "TransitionNeedsTargetStage",
     "Trigger",
     "UtilityMode",
     "WaitResult",
