@@ -3,27 +3,28 @@
 # the WPILib BSD license file in the root directory of this project.
 
 """
-A single-motor arm, gated by a limit switch at the top. Uses `requires_self`
-so each method reads like a plain instance method but returns a `Command`
-that claims this mechanism.
+A single-motor arm with an absolute encoder measuring how far it is below the
+top. Uses `requires_self` so each method reads like a plain instance method
+but returns a `Command` that claims this mechanism.
 """
-
-from collections.abc import AsyncGenerator
 
 import wpilib
 
 import commands3 as cmd3
-from commands3 import requires_self, wait_until
+from commands3 import GeneratorCommand, requires_self, wait_until
+
+_TOP_READING = 0.0
+_TOP_TOLERANCE = 1.0
 
 
 class Arm(cmd3.Mechanism):
     def __init__(self) -> None:
         super().__init__("Arm")
         self._motor = wpilib.PWMMotorController(2)
-        self._top_limit = wpilib.DigitalInput(0)
+        self._encoder = wpilib.DutyCycleEncoder(4, 360.0, _TOP_READING)
 
     def at_top(self) -> bool:
-        return not self._top_limit.get()  # limit switches read low when pressed
+        return self._encoder.get() <= _TOP_TOLERANCE
 
     @requires_self()
     async def raise_arm(self) -> None:
@@ -32,12 +33,10 @@ class Arm(cmd3.Mechanism):
         self._motor.set_throttle(0.0)
 
     @requires_self()
-    async def lower_arm(self, seconds: float = 1.0) -> AsyncGenerator[None]:
-        # A bare `yield` does the same as `await yield_()` in a command body.
-        timer = wpilib.Timer()
-        timer.start()
+    async def lower_arm(self, degrees: float = 45.0) -> GeneratorCommand:
+        """Lowers the arm until it is `degrees` below the top."""
         self._motor.set_throttle(-0.3)
-        while not timer.has_elapsed(seconds):
+        while self._encoder.get() < degrees:
             yield
         self._motor.set_throttle(0.0)
 

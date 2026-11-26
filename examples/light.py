@@ -4,18 +4,16 @@
 
 """A status LED, driven by a digital output. Blinks forever until canceled."""
 
-from collections.abc import AsyncGenerator
-
 import wpilib
 
 import commands3 as cmd3
-from commands3 import requires_self
+from commands3 import GeneratorCommand, requires_self
 
 
 class Light(cmd3.Mechanism):
     def __init__(self) -> None:
         super().__init__("Light")
-        self._output = wpilib.DigitalOutput(1)
+        self._output = wpilib.DigitalOutput(5)
 
     def controllable_during_disabled(self) -> bool:
         # An LED can't hurt anyone, so let it keep blinking while the robot
@@ -23,7 +21,7 @@ class Light(cmd3.Mechanism):
         return True
 
     @requires_self()
-    async def blink(self) -> AsyncGenerator[None]:
+    async def blink(self) -> GeneratorCommand:
         while True:
             self._output.set(True)
             yield

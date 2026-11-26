@@ -39,6 +39,7 @@ __all__ = [
     "LOWEST_PRIORITY",
     "Command",
     "CommandBody",
+    "GeneratorCommand",
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
     "StagedCommandBuilder",
@@ -52,9 +53,23 @@ DEFAULT_PRIORITY = 0
 LOWEST_PRIORITY = -(2**31)
 HIGHEST_PRIORITY = 2**31 - 1
 
+#: The return annotation for a command body that uses a bare ``yield``. Such
+#: a body is an ``AsyncGenerator``, not a coroutine, so it can't be
+#: ``await``-ed from another function. (Awaiting the ``Command`` made from it
+#: is fine.)
+#:
+#: .. code-block:: python
+#:
+#:     @requires_self()
+#:     async def spin(self) -> GeneratorCommand:
+#:         while True:
+#:             self._motor.set_throttle(0.5)
+#:             yield
+type GeneratorCommand = AsyncGenerator[None, None]
+
 #: What calling a command body returns: a coroutine from an ``async def``
 #: function, or an async generator from one that uses a bare ``yield``.
-CommandBodyResult = Awaitable[None] | AsyncGenerator[None, None]
+CommandBodyResult = Awaitable[None] | GeneratorCommand
 
 #: A command's body: a zero-argument callable that returns an awaitable (or
 #: an async generator). Calling it starts a fresh run of the command; the
