@@ -14,12 +14,13 @@ stage's methods aren't available on the next stage's object) rather than
 silently building an incomplete command.
 
 A command's body is a zero-argument ``async def`` function; calling it
-produces the coroutine object the scheduler drives.
+produces the coroutine object the scheduler drives. It may also be an async
+generator, using a bare ``yield`` in place of ``await yield_()``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ParamSpec, cast
 
@@ -51,10 +52,14 @@ DEFAULT_PRIORITY = 0
 LOWEST_PRIORITY = -(2**31)
 HIGHEST_PRIORITY = 2**31 - 1
 
-#: A command's body: a zero-argument callable that returns an awaitable.
-#: Calling it starts a fresh run of the command; the scheduler drives the
-#: returned coroutine one tick at a time.
-CommandBody = Callable[[], Awaitable[None]]
+#: What calling a command body returns: a coroutine from an ``async def``
+#: function, or an async generator from one that uses a bare ``yield``.
+CommandBodyResult = Awaitable[None] | AsyncGenerator[None, None]
+
+#: A command's body: a zero-argument callable that returns an awaitable (or
+#: an async generator). Calling it starts a fresh run of the command; the
+#: scheduler drives the returned coroutine one tick at a time.
+CommandBody = Callable[[], CommandBodyResult]
 
 
 def _no_op() -> None:
@@ -378,8 +383,8 @@ class StagedCommandBuilder:
 
 def no_requirements(
     name: str | None = None,
-) -> Callable[[Callable[_P, Awaitable[None]]], Callable[_P, Command]]:
-    def decorator(body: Callable[_P, Awaitable[None]]) -> Callable[_P, Command]:
+) -> Callable[[Callable[_P, CommandBodyResult]], Callable[_P, Command]]:
+    def decorator(body: Callable[_P, CommandBodyResult]) -> Callable[_P, Command]:
         command_name = name or getattr(body, "__name__", repr(body))
 
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Command:
@@ -394,7 +399,7 @@ def no_requirements(
 
 def requiring(
     *args: str | Mechanism,
-) -> Callable[[Callable[_P, Awaitable[None]]], Callable[_P, Command]]:
+) -> Callable[[Callable[_P, CommandBodyResult]], Callable[_P, Command]]:
     name: str | None
     reqs: tuple[Mechanism, ...]
     if args and isinstance(args[0], str):
@@ -402,11 +407,11 @@ def requiring(
     else:
         name, reqs = None, cast("tuple[Mechanism, ...]", args)
 
-    def decorator(body: Callable[_P, Awaitable[None]]) -> Callable[_P, Command]:
+    def decorator(body: Callable[_P, CommandBodyResult]) -> Callable[_P, Command]:
         command_name = name or getattr(body, "__name__", repr(body))
 
         def wrapper(*call_args: _P.args, **call_kwargs: _P.kwargs) -> Command:
-            def bound_body() -> Awaitable[None]:
+            def bound_body() -> CommandBodyResult:
                 return body(*call_args, **call_kwargs)
 
             if not reqs:

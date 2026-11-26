@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar
 
 from .command import (
     LOWEST_PRIORITY,
     Command,
     CommandBody,
+    CommandBodyResult,
     NeedsNameBuilderStage,
     StagedCommandBuilder,
 )
@@ -101,7 +102,7 @@ class Mechanism:
 def requires_self(
     name: str | None = None,
 ) -> Callable[
-    [Callable[Concatenate[_M, _P], Awaitable[None]]],
+    [Callable[Concatenate[_M, _P], CommandBodyResult]],
     Callable[Concatenate[_M, _P], Command],
 ]:
     """
@@ -111,7 +112,7 @@ def requires_self(
     """
 
     def decorator(
-        body: Callable[Concatenate[_M, _P], Awaitable[None]],
+        body: Callable[Concatenate[_M, _P], CommandBodyResult],
     ) -> Callable[Concatenate[_M, _P], Command]:
         command_name = name or getattr(body, "__name__", repr(body))
 

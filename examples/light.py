@@ -4,10 +4,12 @@
 
 """A status LED, driven by a digital output. Blinks forever until canceled."""
 
+from collections.abc import AsyncGenerator
+
 import wpilib
 
 import commands3 as cmd3
-from commands3 import requires_self, yield_
+from commands3 import requires_self
 
 
 class Light(cmd3.Mechanism):
@@ -21,9 +23,9 @@ class Light(cmd3.Mechanism):
         return True
 
     @requires_self()
-    async def blink(self) -> None:
+    async def blink(self) -> AsyncGenerator[None]:
         while True:
             self._output.set(True)
-            await yield_()
+            yield
             self._output.set(False)
-            await yield_()
+            yield

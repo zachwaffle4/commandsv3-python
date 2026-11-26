@@ -30,7 +30,7 @@ from . import (
     scheduler_event as events,
 )
 from .binding import Binding
-from .coroutine import yield_
+from .coroutine import _as_coroutine, yield_
 from .event_loop import EventLoop
 from .exceptions import (
     CommandCancelled,
@@ -41,7 +41,7 @@ from .exceptions import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable
 
     import wpimath.units
 
@@ -288,7 +288,10 @@ class Scheduler:
 
     # -- Sideloads ---------------------------------------------------------
 
-    def sideload(self, body: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    def sideload(
+        self,
+        body: Callable[[], Coroutine[Any, Any, None] | AsyncGenerator[None, None]],
+    ) -> None:
         """
         Adds a function to run as part of the scheduler, once per ``run()``
         and before triggers are polled. It shouldn't manipulate or control
@@ -299,9 +302,10 @@ class Scheduler:
 
         ``body`` is an ``async def`` function taking no arguments, like a
         command's body, and runs until its first ``await yield_()`` on the
-        first tick. Like a command, any loop in it must yield control back
-        to the scheduler or it will stall the program. If you want to run one
-        plain function every tick, use ``add_periodic()``.
+        first tick. Like a command body, it can use a bare ``yield`` instead
+        of ``await yield_()``. Like a command, any loop in it must yield
+        control back to the scheduler or it will stall the program. If you
+        want to run one plain function every tick, use ``add_periodic()``.
 
         The sideload is scoped like a binding made here: if it's added from
         inside a command it's removed when that command exits, and if it's
@@ -320,13 +324,15 @@ class Scheduler:
 
         :raises TypeError: if ``body`` isn't an ``async def`` function.
         """
-        coroutine = body()
-        if not inspect.iscoroutine(coroutine):
+        result = body()
+        if not (inspect.iscoroutine(result) or inspect.isasyncgen(result)):
             raise TypeError(
                 "A sideload body must be an `async def` function, "
-                f"but calling it returned {type(coroutine).__name__}"
+                f"but calling it returned {type(result).__name__}"
             )
-        self._sideloads.append(_Sideload(create_narrowest_scope(self), coroutine))
+        self._sideloads.append(
+            _Sideload(create_narrowest_scope(self), _as_coroutine(result))
+        )
 
     def add_periodic(self, callback: Callable[[], None]) -> None:
         """
@@ -603,7 +609,9 @@ class Scheduler:
             if isinstance(binding.scope, ForCommand)
             else ec.current_command()
         )
-        state = CommandState(command, parent_command, command.body(), self, binding)
+        state = CommandState(
+            command, parent_command, _as_coroutine(command.body()), self, binding
+        )
 
         self._emit(events.Scheduled, command)
 

@@ -8,10 +8,12 @@ so each method reads like a plain instance method but returns a `Command`
 that claims this mechanism.
 """
 
+from collections.abc import AsyncGenerator
+
 import wpilib
 
 import commands3 as cmd3
-from commands3 import requires_self, wait_until, yield_
+from commands3 import requires_self, wait_until
 
 
 class Arm(cmd3.Mechanism):
@@ -30,12 +32,13 @@ class Arm(cmd3.Mechanism):
         self._motor.set_throttle(0.0)
 
     @requires_self()
-    async def lower_arm(self, seconds: float = 1.0) -> None:
+    async def lower_arm(self, seconds: float = 1.0) -> AsyncGenerator[None]:
+        # A bare `yield` does the same as `await yield_()` in a command body.
         timer = wpilib.Timer()
         timer.start()
         self._motor.set_throttle(-0.3)
         while not timer.has_elapsed(seconds):
-            await yield_()
+            yield
         self._motor.set_throttle(0.0)
 
     @requires_self()

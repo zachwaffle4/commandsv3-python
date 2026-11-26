@@ -4,12 +4,12 @@
 
 """A two-motor differential drivetrain, driven from OI callables every tick."""
 
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 
 import wpilib
 
 import commands3 as cmd3
-from commands3 import requires_self, yield_
+from commands3 import requires_self
 
 
 class Drivetrain(cmd3.Mechanism):
@@ -22,13 +22,13 @@ class Drivetrain(cmd3.Mechanism):
     @requires_self("Arcade Drive")
     async def arcade_drive(
         self, forward: Callable[[], float], rotate: Callable[[], float]
-    ) -> None:
+    ) -> AsyncGenerator[None]:
         """Runs forever, applying `forward()`/`rotate()` to the motors every tick."""
         while True:
             f, r = forward(), rotate()
             self._left.set_throttle(f + r)
             self._right.set_throttle(f - r)
-            await yield_()
+            yield
 
     @requires_self("Stop")
     async def stop(self) -> None:

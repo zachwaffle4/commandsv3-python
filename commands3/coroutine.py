@@ -34,14 +34,37 @@ body can call them directly:
 
 ``yield``/``await`` are Python keywords, hence the trailing underscore on
 ``yield_()`` and ``await_()``.
+
+A body can also be an async generator: a bare ``yield`` in it does the same
+as ``await yield_()``, and every helper here is still ``await``-ed as usual:
+
+.. code-block:: python
+
+    async def drive_forward():
+        while not at_target():
+            drive.set(0.5)
+            yield
+        await wait(0.25)
+        drive.stop()
+
+That only works in the body itself. A function containing ``yield`` is an
+async generator, and an async generator can't be ``await``-ed, so a helper
+called from a body has to use ``await yield_()``.
 """
 
 from __future__ import annotations
 
 import enum
-from collections.abc import Callable, Collection
+import inspect
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+)
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import wpilib
 import wpimath.units
@@ -75,7 +98,6 @@ class _YieldTick:
 
     def __await__(self):
         yield
-        return True
 
 
 _YIELD_TICK = _YieldTick()
@@ -84,6 +106,57 @@ _YIELD_TICK = _YieldTick()
 def yield_() -> _YieldTick:
     """Suspends the current command until the next scheduler tick."""
     return _YIELD_TICK
+
+
+async def _drive_async_generator(body: AsyncGenerator[Any, Any]) -> None:
+    # Runs an async generator body as a coroutine, turning each bare `yield`
+    # into a one-tick suspension. Anything the body awaits suspends straight
+    # through `anext()`/`athrow()`, so parking, fork failures and cancel
+    # requests raised inside the body behave as they do in a plain coroutine.
+    #
+    # When the body is stopped at a bare `yield`, this coroutine is the one
+    # suspended, at `await yield_()`. A cancellation (or `close()`) thrown in
+    # there is passed on to the body at its `yield` with `athrow()`, so its
+    # `finally` blocks run and it can react just as a coroutine body would.
+    try:
+        yielded = await anext(body)
+        while True:
+            if yielded is not None:
+                if inspect.iscoroutine(yielded):
+                    # Most likely `yield wait(...)`. The TypeError says what
+                    # went wrong; skip the "never awaited" warning on top.
+                    yielded.close()
+                await body.aclose()
+                raise TypeError(
+                    "A command body can only `yield` without a value, "
+                    f"but it yielded {yielded!r}. Use `await` to wait on "
+                    "a helper or another command."
+                )
+            try:
+                await yield_()
+            except BaseException as e:  # noqa: BLE001 - re-raised in the body
+                yielded = await body.athrow(e)
+            else:
+                yielded = await anext(body)
+    except StopAsyncIteration:
+        # The body returned. (One raised *by* the body is turned into a
+        # RuntimeError by Python, so this can only mean it finished.)
+        return
+
+
+def _as_coroutine(
+    body_result: Awaitable[None] | AsyncGenerator[Any, Any],
+) -> Coroutine[Any, Any, None]:
+    """
+    The coroutine for the scheduler to drive, given what calling a command
+    or sideload body returned: the result itself for an ``async def``
+    function, or a wrapper around it for an async generator.
+    """
+    if inspect.isasyncgen(body_result):
+        return _drive_async_generator(body_result)
+    # Bodies are typed as returning an awaitable, but the scheduler steps
+    # them with send()/throw()/close(), so in practice it's a coroutine.
+    return cast("Coroutine[Any, Any, None]", body_result)
 
 
 async def _suspend_until(condition: Callable[[], bool]) -> None:
