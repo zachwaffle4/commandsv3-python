@@ -25,9 +25,7 @@ class DriveBackThenShoot(OpMode):
 
         @command(name="Drive Back Then Shoot")
         async def body() -> None:
-            await await_(
-                robot.drivetrain.arcade_drive(lambda: -0.2, lambda: 0.0).with_timeout(2)
-            )
+            await robot.drivetrain.arcade_drive(lambda: -0.2, lambda: 0.0).with_timeout(2)
             await all_of([robot.intake_launcher.shoot(), robot.feeder.feed()])
 
         return body()
