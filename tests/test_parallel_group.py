@@ -94,10 +94,7 @@ def test_group_waits_for_all_required_commands(scheduler):
 
 
 def test_group_with_no_required_commands_waits_for_any_optional(scheduler):
-    # Members always yield at least once before finishing. fork() and
-    # any_of() both touch the same optional-commands collection, so a member
-    # that completes with zero yields would run twice - a known edge case
-    # this test deliberately avoids.
+    # Zero-yield members are covered by test_zero_yield_optional_command_runs_once.
     m1, m2 = DummyMechanism("m1"), DummyMechanism("m2")
     ran = []
 
@@ -366,6 +363,116 @@ def test_builder_with_only_required_commands_runs_all_of_them_and_names_itself(
     scheduler.run()
     assert scheduler.is_running(a)
     assert scheduler.is_running(b)
+
+
+def _counting_one_shot(mechanism, name, runs):
+    # Completes without ever suspending, so it finishes inside the fork() that
+    # starts it.
+    async def body():
+        runs[name] = runs.get(name, 0) + 1
+
+    return Command.requiring(mechanism).executing(body).named(name)
+
+
+def test_zero_yield_optional_command_runs_once(scheduler):
+    runs = {}
+    fast = _counting_one_shot(DummyMechanism("m1"), "Fast", runs)
+    slow = _forever(DummyMechanism("m2"), "Slow")
+
+    race = ParallelGroupBuilder().optional(fast, slow).named("Race")
+    scheduler.schedule(race)
+    scheduler.run()
+
+    assert runs == {"Fast": 1}
+    assert not scheduler.is_running(race)
+    assert not scheduler.is_scheduled_or_running(slow)
+
+
+def test_race_of_two_zero_yield_commands_runs_each_once(scheduler):
+    runs = {}
+    a = _counting_one_shot(DummyMechanism("m1"), "A", runs)
+    b = _counting_one_shot(DummyMechanism("m2"), "B", runs)
+
+    race = Command.race(a, b).named("Race")
+    scheduler.schedule(race)
+    scheduler.run()
+
+    assert runs == {"A": 1, "B": 1}
+    assert not scheduler.is_running(race)
+
+
+def test_zero_yield_optional_with_required_runs_once_and_waits(scheduler):
+    runs = {}
+    counts = {"Required": 0}
+    required = _counting(DummyMechanism("m1"), "Required", 3, counts)
+    optional = _counting_one_shot(DummyMechanism("m2"), "Optional", runs)
+
+    group = ParallelGroupBuilder().requiring(required).optional(optional).named("G")
+    scheduler.schedule(group)
+
+    scheduler.run()
+    assert runs == {"Optional": 1}
+    assert scheduler.is_running(group)
+
+    for _ in range(3):
+        scheduler.run()
+    assert runs == {"Optional": 1}
+    assert counts == {"Required": 3}
+    assert not scheduler.is_running(group)
+
+
+def test_command_both_required_and_optional_runs_once(scheduler):
+    runs = {}
+    both = _counting_one_shot(DummyMechanism("m1"), "Both", runs)
+
+    group = ParallelGroupBuilder().requiring(both).optional(both).named("G")
+    scheduler.schedule(group)
+    scheduler.run()
+
+    assert runs == {"Both": 1}
+    assert not scheduler.is_running(group)
+
+
+def test_with_timeout_does_not_repeat_a_zero_yield_action(scheduler):
+    runs = {}
+    action = _counting_one_shot(DummyMechanism("m"), "Action", runs)
+
+    command = action.with_timeout(1.0)
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert runs == {"Action": 1}
+    assert not scheduler.is_running(command)
+
+
+def test_until_already_true_does_not_repeat_the_action(scheduler):
+    runs = {}
+    checks = 0
+
+    def condition():
+        nonlocal checks
+        checks += 1
+        return True
+
+    action = _counting_one_shot(DummyMechanism("m"), "Action", runs)
+    command = action.until(condition).named("Until")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert runs == {"Action": 1}
+    # The condition command is a child too, so it must only run once.
+    assert checks == 1
+    assert not scheduler.is_running(command)
+
+
+def test_until_already_true_cancels_a_long_running_action(scheduler):
+    action = _forever(DummyMechanism("m"), "Action")
+    command = action.until(lambda: True).named("Until")
+    scheduler.schedule(command)
+    scheduler.run()
+
+    assert not scheduler.is_running(command)
+    assert not scheduler.is_scheduled_or_running(action)
 
 
 def test_builder_with_required_and_optional_commands_runs_all_of_them(scheduler):

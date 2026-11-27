@@ -327,6 +327,21 @@ class ForkResult:
                     )
                 )
 
+    async def _await_any(self) -> None:
+        # Suspends until at least one of the forked runs has finished, without
+        # scheduling anything again. Like any_of(), waits forever if nothing
+        # was forked.
+        def all_running() -> bool:
+            return all(
+                _same_run(self.scheduler, command, run_id)
+                for command, run_id in zip(
+                    self.forked_commands, self.run_ids, strict=True
+                )
+            )
+
+        while all_running():
+            await _suspend_until(lambda: not all_running())
+
 
 def _same_run(scheduler: Scheduler, command: Command, run_id: int) -> bool:
     # Whether ``command`` is still in the run identified by ``run_id``. An ID
@@ -544,17 +559,11 @@ async def any_of(
     if result.failed:
         return result
 
-    runs = list(zip(result.forked_commands, result.run_ids, strict=True))
-
-    def all_running() -> bool:
-        return all(_same_run(scheduler, command, run_id) for command, run_id in runs)
-
-    while all_running():
-        await _suspend_until(lambda: not all_running())
+    await result._await_any()
 
     # At least one command exited; cancel the rest. A command that exited and
     # was rescheduled elsewhere is a different run and is left alone.
-    for command, run_id in runs:
+    for command, run_id in zip(result.forked_commands, result.run_ids, strict=True):
         if _same_run(scheduler, command, run_id):
             scheduler.cancel(command)
 

@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from .command import DEFAULT_PRIORITY, Command, StagedCommandBuilder
 from .conflict_detector import throw_if_conflicts
-from .coroutine import all_of, any_of, fork
+from .coroutine import fork
 
 __all__ = ["ParallelGroupBuilder"]
 
@@ -25,20 +25,23 @@ def _build_parallel_group(
     requirements = frozenset().union(*(c.requirements for c in all_commands))
     priority = max((c.priority for c in all_commands), default=DEFAULT_PRIORITY)
 
+    # A command added as both required and optional is just required.
+    optional_only = [c for c in optional_commands if c not in required_commands]
+
     async def body() -> None:
-        fork(*optional_commands)
+        # Each child is scheduled exactly once, and the group waits on the
+        # runs those forks started rather than forking again: a child that
+        # finishes without suspending is done by the time fork() returns, and
+        # handing it to all_of()/any_of() would schedule it a second time.
+        optional = fork(*optional_only)
 
         if not required_commands:
-            # No required commands - just wait for the first optional command
-            # to finish. Note: fork() and any_of() both touch the same
-            # optional_commands collection. A member that completes with
-            # zero yields would already be "done" by the time any_of()
-            # re-schedules it, causing it to run a second time - avoid using
-            # a zero-yield command as a group member (see test_parallel_group.py).
-            await any_of(optional_commands)
+            # No required commands - wait for the first optional one to finish.
+            await optional._await_any()
         else:
-            # Wait for every required command to finish.
-            await all_of(required_commands)
+            # Wait for every required command to finish. The optional ones
+            # keep running alongside them.
+            await fork(*required_commands).await_completion()
 
         # The scheduler cancels any optional child commands still running
         # once this returns.

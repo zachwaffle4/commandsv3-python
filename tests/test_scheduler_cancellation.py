@@ -9,7 +9,16 @@ when. The ``on_exit`` ordering cases live in ``test_scheduler_on_exit.py``.
 
 import pytest
 
-from commands3 import Command, Mechanism, Scheduler, await_, fork, park, yield_
+from commands3 import (
+    Command,
+    Mechanism,
+    Scheduler,
+    await_,
+    fork,
+    park,
+    wait_until,
+    yield_,
+)
 
 
 class DummyMechanism(Mechanism):
@@ -740,3 +749,122 @@ def test_cancel_all_inside_one_scheduler_leaves_another_alone(scheduler):
 
     assert scheduler.get_running_commands() == []
     assert other_scheduler.get_running_commands() == [bystander]
+
+
+# -- Canceling and rescheduling within one tick ----------------------------
+
+
+class _Invocations:
+    """Counts how often a command body starts, resumes and cleans up."""
+
+    def __init__(self) -> None:
+        self.starts = 0
+        self.resumes = 0
+        self.cleanups = 0
+
+    def command(self, *, parked: bool = False) -> Command:
+        async def body():
+            self.starts += 1
+            try:
+                while True:
+                    if parked:
+                        # A parked command whose condition is already true
+                        # is resumed on the next pass over it.
+                        await wait_until(lambda: True)
+                        await yield_()
+                    else:
+                        await yield_()
+                    self.resumes += 1
+            finally:
+                self.cleanups += 1
+
+        return Command.no_requirements(body).named("A")
+
+
+@pytest.mark.parametrize("parked", [False, True])
+def test_canceled_and_rescheduled_in_one_tick_does_not_resume_the_old_run(
+    scheduler, parked
+):
+    a_runs = _Invocations()
+    a = a_runs.command(parked=parked)
+    rescheduled = False
+
+    async def b_body():
+        nonlocal rescheduled
+        await yield_()
+        scheduler.cancel(a)
+        scheduler.schedule(a)
+        rescheduled = True
+        await park()
+
+    b = Command.no_requirements(b_body).named("B")
+    # A before B: commands run newest-first, so B runs before A's entry in
+    # the same tick's snapshot is reached.
+    scheduler.schedule(a)
+    scheduler.schedule(b)
+    scheduler.run()
+    assert a_runs.starts == 1
+
+    scheduler.run()  # B cancels and reschedules A, then the snapshot reaches A
+    assert rescheduled
+    assert a_runs.starts == 2
+    assert a_runs.resumes == 0
+    assert a_runs.cleanups == 1
+    assert scheduler.is_running(a)
+    assert scheduler.get_parent_of(a) is b
+
+    scheduler.run()  # only the new run resumes
+    assert a_runs.starts == 2
+    assert a_runs.cleanups == 1
+    assert scheduler.is_running(a)
+
+
+def test_repeated_cancel_and_reschedule_in_one_tick(scheduler):
+    a_runs = _Invocations()
+    a = a_runs.command()
+
+    async def b_body():
+        await yield_()
+        for _ in range(5):
+            scheduler.cancel(a)
+            scheduler.schedule(a)
+        await park()
+
+    b = Command.no_requirements(b_body).named("B")
+    scheduler.schedule(a)
+    scheduler.schedule(b)
+    scheduler.run()
+
+    scheduler.run()
+    assert a_runs.starts == 6
+    assert a_runs.cleanups == 5
+    assert a_runs.resumes == 0
+    assert scheduler.is_running(a)
+
+    scheduler.run()
+    assert a_runs.resumes == 1
+
+    scheduler.cancel(b)
+    assert a_runs.cleanups == 6
+    assert scheduler.get_running_commands() == []
+
+
+def test_rescheduled_command_run_id_changes(scheduler):
+    a = Command.no_requirements(_park_body).named("A")
+    ids = []
+
+    async def b_body():
+        await yield_()
+        ids.append(scheduler.run_id(a))
+        scheduler.cancel(a)
+        scheduler.schedule(a)
+        ids.append(scheduler.run_id(a))
+        await park()
+
+    scheduler.schedule(a)
+    scheduler.schedule(Command.no_requirements(b_body).named("B"))
+    scheduler.run()
+    scheduler.run()
+
+    assert ids[0] != ids[1]
+    assert scheduler.run_id(a) == ids[1]

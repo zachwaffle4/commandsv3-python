@@ -8,7 +8,6 @@ from commands3 import (
     Command,
     Mechanism,
     Scheduler,
-    Trigger,
     await_,
     park,
     yield_,
@@ -141,23 +140,6 @@ def test_when_exited_throws_after_build():
 
     with pytest.raises(RuntimeError, match="Command builders cannot be reused"):
         stage.when_exited(lambda: None)
-
-
-def test_command_scoped_bindings_are_not_tracked_for_cleanup(scheduler):
-    flag = {"value": True}
-    bound = Command.no_requirements(park).named("Bound")
-
-    async def scoping_body():
-        Trigger(lambda: flag["value"], scheduler).while_true(bound)
-        await park()
-
-    scoping = Command.no_requirements(scoping_body).named("Scoping")
-    scheduler.schedule(scoping)
-    scheduler.run()
-    scheduler.run()
-
-    assert scheduler.is_running(bound)
-    assert not any(isinstance(b.scope, ForCommand) for b in scheduler._active_bindings)
 
 
 def test_rescheduling_a_command_scoped_binding_after_its_parent_exits_survives(

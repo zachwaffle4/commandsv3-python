@@ -25,8 +25,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "cancels_on_fork_failure_by_default",
+    "cleaning_up",
     "current_command",
     "current_state",
+    "has_mounted_command",
     "has_mounted_command_of",
     "is_mounted",
     "mounted",
@@ -41,6 +43,31 @@ _stack: list[CommandState] = []
 # command, so it has no ``CommandState`` to put on ``_stack``; this holds just
 # enough for ``fork()`` and friends to find the scheduler to use.
 _sideload_schedulers: list[Scheduler] = []
+
+# How many canceled commands' cleanup is running right now. See cleaning_up().
+_cleanup_depth = 0
+
+
+@contextlib.contextmanager
+def cleaning_up() -> Generator[None]:
+    """
+    Marks the cleanup of a canceled command (its ``finally`` blocks, run by
+    throwing ``CommandCancelled`` into it) as executing for the duration of
+    the ``with`` block.
+
+    Cleanup runs detached from whatever command caused the cancellation: it
+    isn't that command's work, and the canceled command itself is no longer
+    running. So ``current_state()`` is ``None`` - whatever the cleanup
+    schedules is queued as a top-level command - and the coroutine primitives
+    refuse to run. ``is_mounted()`` still sees the real stack, so the
+    scheduler still knows which coroutines can't be thrown into.
+    """
+    global _cleanup_depth
+    _cleanup_depth += 1
+    try:
+        yield
+    finally:
+        _cleanup_depth -= 1
 
 
 @contextlib.contextmanager
@@ -73,8 +100,18 @@ def sideloading(scheduler: Scheduler) -> Generator[None]:
 
 
 def current_state() -> CommandState | None:
-    """The state of the command currently executing, or ``None`` if none is."""
+    """
+    The state of the command currently executing, or ``None`` if none is -
+    including while a canceled command's cleanup runs (see ``cleaning_up()``).
+    """
+    if _cleanup_depth:
+        return None
     return _stack[-1] if _stack else None
+
+
+def has_mounted_command() -> bool:
+    """Whether any command is on the stack, even if cleanup is running above it."""
+    return bool(_stack)
 
 
 def current_command() -> Command | None:
@@ -119,8 +156,15 @@ def require_current_scheduler() -> Scheduler:
     The scheduler driving whatever is currently executing: the running
     command, or a sideload if no command is mounted.
 
-    :raises RuntimeError: if neither a command nor a sideload is executing.
+    :raises RuntimeError: if neither a command nor a sideload is executing,
+        or if a canceled command's cleanup is.
     """
+    if _cleanup_depth:
+        raise RuntimeError(
+            "commandsv3 coroutine primitives (fork/await_/all_of/any_of) "
+            "can't be used in the cleanup of a canceled command. Cleanup can't "
+            "suspend; use Scheduler.schedule() to queue a command instead"
+        )
     state = current_state()
     if state is not None:
         return state.scheduler

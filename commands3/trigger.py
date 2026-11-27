@@ -322,7 +322,9 @@ class Trigger:
                 if binding.scope.active():
                     still_active.append(binding)
                     continue
-                self._scheduler.cancel(binding.command)
+                # Only the run this binding started. The same command may
+                # have been started again since, by something still in scope.
+                self._scheduler._cancel_run_of(binding)
             self._bindings[binding_type] = still_active
 
     def _schedule_bindings(self, binding_type: BindingType) -> None:

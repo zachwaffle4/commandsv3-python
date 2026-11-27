@@ -226,9 +226,6 @@ class Scheduler:
         # Ordered narrowest-last: the last entry for a mechanism is the one
         # actually in effect.
         self._default_command_bindings: dict[Mechanism, list[Binding]] = {}
-        # All bindings created via schedule(); checked each run() for scopes
-        # that have gone inactive.
-        self._active_bindings: list[Binding] = []
         # Both keyed by Command (a command can only be queued/running once,
         # enforced by is_scheduled_or_running()), preserving insertion order.
         self._queued_to_run: dict[Command, CommandState] = {}
@@ -243,6 +240,11 @@ class Scheduler:
         self._sideloads: list[_Sideload] = []
         # dict, not set/list, for insertion-ordered "no duplicates" semantics.
         self._event_listeners: dict[Callable[[events.SchedulerEvent], None], None] = {}
+        # Errors raised by canceled commands' cleanup and hooks, held until
+        # the scheduler is somewhere it can safely raise them. See
+        # _reporting_cleanup_errors().
+        self._cleanup_errors: list[Exception] = []
+        self._cleanup_error_depth = 0
 
     @staticmethod
     def get_default() -> Scheduler:
@@ -588,16 +590,9 @@ class Scheduler:
             # command back through scheduling would be wrong.
             return result
 
-        if not isinstance(binding.scope, ForCommand):
-            # Track this binding so we can cancel it when it's out of scope.
-            # Triggers clean themselves up, but manually scheduled commands
-            # can't, so the scheduler tracks them.
-            #
-            # Command-scoped bindings are deliberately not tracked: the bound
-            # command is already canceled in the same tick its parent exits,
-            # so tracking would cancel it a second time on the next tick -
-            # killing it if it was rescheduled in between.
-            self._active_bindings.append(binding)
+        # The binding is recorded on the new CommandState, which is how
+        # _cancel_stale_bindings() finds runs whose scope has ended. It's
+        # dropped along with the state when the run ends.
 
         self._evict_conflicting_on_deck_commands(command)
 
@@ -698,10 +693,24 @@ class Scheduler:
             conflicting_roots.add(root)
 
         for conflicting_state in conflicting_roots:
+            if not self._is_current(conflicting_state):
+                # Already canceled along with an earlier root, or canceled
+                # and rescheduled by one's cleanup; that new run isn't ours
+                # to interrupt.
+                continue
             self._emit(
                 events.Interrupted, conflicting_state.command, incoming_state.command
             )
             self.cancel(conflicting_state.command)
+
+    def _is_current(self, state: CommandState) -> bool:
+        # Whether `state` is still the queued or running invocation of its
+        # command, as opposed to one that was canceled (and maybe replaced by
+        # a new run) since it was looked up.
+        return (
+            self._running_commands.get(state.command) is state
+            or self._queued_to_run.get(state.command) is state
+        )
 
     def _is_ancestor_of(self, ancestor: Command, state: CommandState) -> bool:
         if state.parent is None:
@@ -726,7 +735,26 @@ class Scheduler:
 
         Cancellation runs any pending ``try/finally`` cleanup in the
         command's body before its ``on_cancel`` hook, so cleanup can go in
-        either place.
+        either place. It runs exactly once, even if the command is canceled
+        again.
+
+        Cleanup is synchronous and runs detached from whichever command
+        caused the cancellation:
+
+        - It can't suspend. Cleanup that awaits or yields is closed at that
+          point, and a ``RuntimeError`` is raised.
+        - ``schedule()`` queues a top-level command that starts on the next
+          ``run()``, which is how to start a command such as stowing a
+          mechanism. ``fork()``, ``await_()``, ``all_of()`` and ``any_of()``
+          raise ``RuntimeError``.
+
+        If cleanup or a hook raises, the cancellation still finishes: the
+        command is removed, both hooks run, ``Canceled`` is emitted and its
+        children are canceled. The error is then raised from the outermost
+        call into the scheduler (this ``cancel()``, or ``run()`` if that's
+        where the cancellation happened), once no command is executing.
+        Errors from more than one command are raised as an
+        ``ExceptionGroup``.
 
         A command can cancel itself, or an ancestor that is waiting on it
         (for example a child ending the whole composition it belongs to). That
@@ -741,42 +769,114 @@ class Scheduler:
             # Unwind to it instead; see _CancelRequested.
             raise _CancelRequested(command)
 
-        state = self._running_commands.pop(command, None)
-        was_running = state is not None
+        with self._reporting_cleanup_errors():
+            state = self._running_commands.pop(command, None)
+            was_running = state is not None
 
-        queued_state = self._queued_to_run.pop(command, None)
-        if queued_state is not None:
-            # Never started running, so there's nothing to clean up - just
-            # close the unstarted coroutine object so Python doesn't warn
-            # about it being garbage collected without ever running.
-            self._discard_unstarted_coroutine(queued_state)
+            queued_state = self._queued_to_run.pop(command, None)
+            if queued_state is not None:
+                # Never started running, so there's nothing to clean up - just
+                # close the unstarted coroutine object so Python doesn't warn
+                # about it being garbage collected without ever running.
+                self._discard_unstarted_coroutine(queued_state)
 
-        if was_running:
-            self._cancel_coroutine(state)
-            # on_exit first, in case on_cancel has special behavior that
-            # overrides the standard exit logic.
-            command.on_exit()
-            command.on_cancel()
+            if state is not None:
+                self._cancel_coroutine(state)
+                # on_exit first, in case on_cancel has special behavior that
+                # overrides the standard exit logic.
+                self._run_cleanup_hook(command, command.on_exit)
+                self._run_cleanup_hook(command, command.on_cancel)
 
-        if was_running or queued_state is not None:
-            # Only when the scheduler actually knew about the command.
-            self._emit(events.Canceled, command)
+            if was_running or queued_state is not None:
+                # Only when the scheduler actually knew about the command.
+                self._emit(events.Canceled, command)
 
-        self._remove_orphaned_children(command)
+            self._remove_orphaned_children(command)
 
-    @staticmethod
-    def _cancel_coroutine(state: CommandState) -> None:
+    def _reporting_cleanup_errors(self) -> _ReportingCleanupErrors:
+        # A canceled command's cleanup can fail, and cancellation happens in
+        # the middle of other scheduler work: interrupting a command for an
+        # incoming one, tearing down a composition, ending a scope. Raising
+        # right away would leave that work half done, so errors are collected
+        # instead and raised once the outermost scheduler operation is
+        # finished, and only once no command is executing - an error in one
+        # command's cleanup mustn't unwind through the frames of the command
+        # that canceled it.
+        return _ReportingCleanupErrors(self)
+
+    def _raise_cleanup_errors(self) -> None:
+        if (
+            self._cleanup_error_depth != 0
+            or not self._cleanup_errors
+            or ec.has_mounted_command()
+        ):
+            return
+        errors = self._cleanup_errors
+        self._cleanup_errors = []
+        if len(errors) == 1:
+            raise errors[0]
+        raise ExceptionGroup("Errors cleaning up canceled commands", errors)
+
+    def _record_cleanup_error(self, command: Command, error: Exception) -> None:
+        # Attribution never raises; that's the only annotation made here, so
+        # an exception that can't be annotated is still reported as is.
+        _attribute_to_command(error, command, None)
+        self._cleanup_errors.append(error)
+
+    def _run_cleanup_hook(self, command: Command, hook: Callable[[], None]) -> None:
+        try:
+            with ec.cleaning_up():
+                hook()
+        except Exception as e:  # noqa: BLE001 - reported once the cancel is done
+            self._record_cleanup_error(command, e)
+
+    def _cancel_coroutine(self, state: CommandState) -> None:
+        # Cleanup is synchronous: the thrown-in CommandCancelled must finish
+        # the coroutine. If it doesn't, the coroutine is closed here and the
+        # command is still canceled; it is never left suspended once the
+        # scheduler has let go of it.
         if state.finished:
             # The coroutine already terminated on its own - it completed,
             # raised, or was unwound by a ForkFailed propagating out of it.
             # Throwing into it again raises "cannot reuse already awaited
             # coroutine", so there's nothing left to cancel.
             return
+        # Set first, so a cancel() reached from the cleanup itself doesn't
+        # throw in again.
+        state.finished = True
+        command = state.command
 
-        try:
-            state.coroutine.throw(CommandCancelled)
-        except (CommandCancelled, StopIteration):
-            pass
+        with ec.cleaning_up():
+            try:
+                state.coroutine.throw(CommandCancelled)
+            except _CancelRequested as e:
+                # Must precede CommandCancelled - it subclasses it.
+                self._record_cleanup_error(
+                    command,
+                    RuntimeError(
+                        f"The cleanup of canceled command {command.name!r} "
+                        f"called {e}, which can't be done while that command "
+                        "is executing"
+                    ),
+                )
+            except (CommandCancelled, StopIteration):
+                pass
+            except Exception as e:  # noqa: BLE001 - reported once the cancel is done
+                self._record_cleanup_error(command, e)
+            else:
+                # It suspended instead of finishing.
+                error = RuntimeError(
+                    f"Command {command.name!r} suspended while being canceled. "
+                    "Cleanup in a canceled command (a `finally` block, or code "
+                    "that catches CommandCancelled) can't await or yield; it "
+                    "was closed at that point, so the rest of it did not run"
+                )
+                try:
+                    state.coroutine.close()
+                except Exception as close_error:  # noqa: BLE001
+                    # Most likely it caught GeneratorExit and suspended again.
+                    error.__cause__ = close_error
+                self._record_cleanup_error(command, error)
 
     @staticmethod
     def _discard_unstarted_coroutine(state: CommandState) -> None:
@@ -787,12 +887,13 @@ class Scheduler:
 
     def _remove_orphaned_children(self, parent: Command) -> None:
         children = [
-            command
-            for command, state in self._running_commands.items()
-            if state.parent is parent
+            state for state in self._running_commands.values() if state.parent is parent
         ]
         for child in children:
-            self.cancel(child)
+            # Canceling one child runs its cleanup, which may have canceled
+            # or rescheduled a sibling; only cancel runs that are still ours.
+            if self._is_current(child):
+                self.cancel(child.command)
 
     def cancel_all(self) -> None:
         """
@@ -809,19 +910,20 @@ class Scheduler:
             # everything. See _CancelRequested.
             raise _CancelRequested(None, self)
 
-        queued = list(self._queued_to_run.values())
-        self._queued_to_run.clear()
-        for state in queued:
-            self._discard_unstarted_coroutine(state)
-            self._emit(events.Canceled, state.command)
+        with self._reporting_cleanup_errors():
+            queued = list(self._queued_to_run.values())
+            self._queued_to_run.clear()
+            for state in queued:
+                self._discard_unstarted_coroutine(state)
+                self._emit(events.Canceled, state.command)
 
-        running = list(self._running_commands.items())
-        self._running_commands.clear()
-        for command, state in running:
-            self._cancel_coroutine(state)
-            command.on_exit()
-            command.on_cancel()
-            self._emit(events.Canceled, command)
+            running = list(self._running_commands.items())
+            self._running_commands.clear()
+            for command, state in running:
+                self._cancel_coroutine(state)
+                self._run_cleanup_hook(command, command.on_exit)
+                self._run_cleanup_hook(command, command.on_cancel)
+                self._emit(events.Canceled, command)
 
     # -- Run loop --------------------------------------------------------
 
@@ -841,27 +943,55 @@ class Scheduler:
         """
         start = wpilib.RobotController.get_time()
 
-        self._cancel_stale_bindings()
-        self._release_stale_triggers()
-        self._cancel_commands_that_cannot_run_in_disabled()
-        # Sideloads may change state that triggers read, so run them first.
-        self._run_periodic_sideloads()
-        self._event_loop.poll()
-        self._schedule_default_commands()
-        self._promote_scheduled_commands()
-        self._run_commands()
+        # Errors from canceled commands' cleanup surface here, after the tick.
+        with self._reporting_cleanup_errors():
+            self._cancel_stale_bindings()
+            self._release_stale_triggers()
+            self._cancel_commands_that_cannot_run_in_disabled()
+            # Sideloads may change state that triggers read, so run them first.
+            self._run_periodic_sideloads()
+            self._event_loop.poll()
+            self._schedule_default_commands()
+            self._promote_scheduled_commands()
+            self._run_commands()
 
-        end = wpilib.RobotController.get_time()
-        self._last_run_time_ms = _nanos_to_ms(end - start)
+            end = wpilib.RobotController.get_time()
+            self._last_run_time_ms = _nanos_to_ms(end - start)
 
     def _cancel_stale_bindings(self) -> None:
-        still_active = []
-        for binding in self._active_bindings:
-            if binding.scope.active():
-                still_active.append(binding)
-                continue
+        # Cancels every run whose binding's scope has ended. A binding is a
+        # record of how one particular run was started, so this looks at the
+        # runs themselves: a run that ended on its own takes its binding with
+        # it, and a later run of the same command object, started under a
+        # binding that's still in scope, is left alone.
+        #
+        # Command-scoped runs are skipped: they're canceled in the same tick
+        # their parent exits, by _remove_orphaned_children().
+        stale = [
+            state
+            for state in (
+                *self._running_commands.values(),
+                *self._queued_to_run.values(),
+            )
+            if not isinstance(state.binding.scope, ForCommand)
+            and not state.binding.scope.active()
+        ]
+        for state in stale:
+            # Canceling one may have canceled another (its child), or its
+            # cleanup may have restarted one under a new binding.
+            if self._is_current(state):
+                self.cancel(state.command)
+
+    def _cancel_run_of(self, binding: Binding) -> None:
+        # Cancels binding.command, but only if its current run was started by
+        # `binding` (compared by identity: bindings compare by value). Used
+        # when a trigger's binding expires, so it can't take down a run that
+        # something else started since.
+        state = self._running_commands.get(binding.command) or self._queued_to_run.get(
+            binding.command
+        )
+        if state is not None and state.binding is binding:
             self.cancel(binding.command)
-        self._active_bindings = still_active
 
     def _release_stale_triggers(self) -> None:
         # Only drop the strong reference. The trigger isn't unbound from the
@@ -904,13 +1034,20 @@ class Scheduler:
         self._bound_triggers[trigger] = None
 
     def _promote_scheduled_commands(self) -> None:
-        for state in list(self._queued_to_run.values()):
+        # One at a time, in the order they were queued. Evicting a running
+        # command runs its cleanup, which may queue another command; that one
+        # is then promoted in turn, after evicting whatever it conflicts with,
+        # instead of slipping in unchecked. Queued commands never conflict
+        # with each other (scheduling one evicts any it conflicts with from
+        # the queue), so promoting one can't evict another.
+        while self._queued_to_run:
+            command, state = next(iter(self._queued_to_run.items()))
             self._evict_conflicting_running_commands(state)
-
-        for command, state in self._queued_to_run.items():
-            self._running_commands[command] = state
-
-        self._queued_to_run.clear()
+            if self._queued_to_run.get(command) is state:
+                # Still queued: cleanup run by the eviction may have evicted
+                # it from the queue in turn.
+                del self._queued_to_run[command]
+                self._running_commands[command] = state
 
     def _run_commands(self) -> None:
         # Run in reverse so a parent command can resume in the same tick a
@@ -923,8 +1060,12 @@ class Scheduler:
         command = state.command
         coroutine = state.coroutine
 
-        if command not in self._running_commands:
-            # Probably canceled by an owning composition; do not run.
+        if not self._is_current(state):
+            # Probably canceled by an owning composition; do not run. Checks
+            # the state rather than the command: _run_commands() steps a
+            # snapshot, and a command canceled and rescheduled earlier in the
+            # same tick is back in the running set under a new state, whose
+            # run must not be confused with this canceled one.
             return
 
         resume_when = state.resume_when
@@ -937,11 +1078,10 @@ class Scheduler:
                 # The condition is user code, and it ran here rather than
                 # inside the command. Report it the way an error raised by
                 # the command's own body would be, so it's still attributed
-                # to the command. The coroutine is suspended, so close it
+                # to the command. The coroutine is suspended, so cancel it
                 # (running any `finally` blocks) rather than leaving it to
                 # be collected.
-                state.finished = True
-                state.coroutine.close()
+                self._cancel_coroutine(state)
                 self._handle_command_exception(state, e)
                 return
             if not ready:
@@ -1174,6 +1314,26 @@ class Scheduler:
     def last_runtime_ms(self) -> wpimath.units.milliseconds:
         """How long the most recent call to ``run()`` took, in milliseconds."""
         return self._last_run_time_ms
+
+
+class _ReportingCleanupErrors:
+    # See Scheduler._reporting_cleanup_errors(). A class rather than a
+    # @contextmanager: that rewrites the __traceback__ of an exception passing
+    # through it, and a command's exception must reach run()'s caller as is.
+    __slots__ = ("_scheduler",)
+
+    def __init__(self, scheduler: Scheduler) -> None:
+        self._scheduler = scheduler
+
+    def __enter__(self) -> None:
+        self._scheduler._cleanup_error_depth += 1
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._scheduler._cleanup_error_depth -= 1
+        if exc_type is None:
+            # On an exception, collected errors wait for the next operation
+            # to finish cleanly, rather than replacing that exception.
+            self._scheduler._raise_cleanup_errors()
 
 
 class CommandState:
