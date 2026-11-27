@@ -18,6 +18,7 @@ dependencies = [
 dev = [
     "jinja2>=3.1.6",
     "pytest>=8",
+    "robotpy-rev>=2027.0.0a9",
     "ruff>=0.16.7",
     "ty>=0.0.81",
 ]
