@@ -4,14 +4,14 @@
 
 """
 A single-motor arm with an absolute encoder measuring how far it is below the
-top. Uses `requires_self` so each method reads like a plain instance method
-but returns a `Command` that claims this mechanism.
+top. Uses `@command` so each method reads like a plain instance method but
+returns a `Command` that claims this mechanism.
 """
 
 import wpilib
 
 import commands3 as cmd3
-from commands3 import GeneratorCommand, requires_self, wait_until
+from commands3 import GeneratorCommand, command, wait_until
 
 _TOP_READING = 0.0
 _TOP_TOLERANCE = 1.0
@@ -26,13 +26,13 @@ class Arm(cmd3.Mechanism):
     def at_top(self) -> bool:
         return self._encoder.get() <= _TOP_TOLERANCE
 
-    @requires_self()
+    @command
     async def raise_arm(self) -> None:
         self._motor.set_throttle(0.5)
         await wait_until(self.at_top)
         self._motor.set_throttle(0.0)
 
-    @requires_self()
+    @command
     async def lower_arm(self, degrees: float = 45.0) -> GeneratorCommand:
         """Lowers the arm until it is `degrees` below the top."""
         self._motor.set_throttle(-0.3)
@@ -40,7 +40,7 @@ class Arm(cmd3.Mechanism):
             yield
         self._motor.set_throttle(0.0)
 
-    @requires_self()
+    @command
     async def hold(self) -> None:
         self._motor.set_throttle(0.0)
         await cmd3.park()

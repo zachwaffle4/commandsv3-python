@@ -13,9 +13,9 @@ from commands3 import (
     Command,
     Mechanism,
     Scheduler,
+    command,
     failing_command,
     park,
-    requires_self,
     wait_until,
 )
 
@@ -231,29 +231,29 @@ def test_generator_body_can_await_a_child_command(scheduler):
     assert not scheduler.is_running(parent)
 
 
-def test_requires_self_accepts_a_generator_method(scheduler):
+def test_command_decorator_accepts_a_generator_method(scheduler):
     class Counter(Mechanism):
         def __init__(self) -> None:
             super().__init__("Counter")
             self.count = 0
 
-        @requires_self()
+        @command
         async def count_to(self, n: int):
             while self.count < n:
                 self.count += 1
                 yield
 
     counter = Counter()
-    command = counter.count_to(3)
-    assert command.requires(counter)
-    assert command.name == "count_to"
+    count = counter.count_to(3)
+    assert count.requires(counter)
+    assert count.name == "Counter.count_to"
 
-    scheduler.schedule(command)
+    scheduler.schedule(count)
     for _ in range(4):
         scheduler.run()
 
     assert counter.count == 3
-    assert not scheduler.is_running(command)
+    assert not scheduler.is_running(count)
 
 
 def test_sideload_can_be_a_generator(scheduler):

@@ -30,9 +30,12 @@ from .command import (
     NeedsExecutionBuilderStage,
     NeedsNameBuilderStage,
     StagedCommandBuilder,
-    no_requirements,
-    requiring,
 )
+
+# The decorator takes the `commands3.command` attribute from the submodule of
+# the same name. `from commands3.command import ...` still finds the module,
+# through `sys.modules`.
+from .command_decorator import command
 from .conflict_detector import Conflict, find_all_conflicts, throw_if_conflicts
 from .coroutine import (
     ForkResult,
@@ -48,7 +51,7 @@ from .coroutine import (
 )
 from .event_loop import EventLoop
 from .exceptions import CommandCancelled, ForkFailed, failing_command
-from .mechanism import Mechanism, requires_self
+from .mechanism import Mechanism
 from .parallel_group import ParallelGroupBuilder
 from .scheduler import (
     AlreadyRunning,
@@ -164,14 +167,12 @@ __all__ = [
     "all_of",
     "any_of",
     "await_",
+    "command",
     "create_narrowest_scope",
     "failing_command",
     "find_all_conflicts",
     "fork",
-    "no_requirements",
     "park",
-    "requires_self",
-    "requiring",
     "robot_state_fetcher",
     "scheduler_event",
     "throw_if_conflicts",

@@ -9,7 +9,7 @@ from collections.abc import Callable
 import wpilib
 
 import commands3 as cmd3
-from commands3 import GeneratorCommand, requires_self
+from commands3 import GeneratorCommand, command
 
 
 class Drivetrain(cmd3.Mechanism):
@@ -19,7 +19,7 @@ class Drivetrain(cmd3.Mechanism):
         self._right = wpilib.PWMMotorController(1)
         self._right.set_inverted(True)
 
-    @requires_self("Arcade Drive")
+    @command(name="Arcade Drive")
     async def arcade_drive(
         self, forward: Callable[[], float], rotate: Callable[[], float]
     ) -> GeneratorCommand:
@@ -30,7 +30,7 @@ class Drivetrain(cmd3.Mechanism):
             self._right.set_throttle(f - r)
             yield
 
-    @requires_self("Stop")
+    @command
     async def stop(self) -> None:
         self._left.set_throttle(0.0)
         self._right.set_throttle(0.0)

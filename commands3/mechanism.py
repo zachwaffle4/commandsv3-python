@@ -6,15 +6,13 @@
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING
 
 from .command import (
     LOWEST_PRIORITY,
     Command,
     CommandBody,
-    CommandBodyResult,
     NeedsNameBuilderStage,
     StagedCommandBuilder,
 )
@@ -24,10 +22,7 @@ from .scheduler import Scheduler
 if TYPE_CHECKING:
     import wpimath.units
 
-__all__ = ["Mechanism", "requires_self"]
-
-_M = TypeVar("_M", bound="Mechanism")
-_P = ParamSpec("_P")
+__all__ = ["Mechanism"]
 
 
 class Mechanism:
@@ -97,29 +92,3 @@ class Mechanism:
     def idle_for(self, duration: wpimath.units.seconds) -> Command:
         """A command that claims this mechanism and does nothing for the given duration."""
         return self.idle().with_timeout(duration)
-
-
-def requires_self(
-    name: str | None = None,
-) -> Callable[
-    [Callable[Concatenate[_M, _P], CommandBodyResult]],
-    Callable[Concatenate[_M, _P], Command],
-]:
-    """
-    Decorates a ``Mechanism`` method so that calling it builds and returns a
-    ``Command`` requiring that mechanism, rather than running the method body
-    directly.
-    """
-
-    def decorator(
-        body: Callable[Concatenate[_M, _P], CommandBodyResult],
-    ) -> Callable[Concatenate[_M, _P], Command]:
-        command_name = name or getattr(body, "__name__", repr(body))
-
-        @functools.wraps(body)
-        def wrapper(self: _M, *args: _P.args, **kwargs: _P.kwargs) -> Command:
-            return self.run(lambda: body(self, *args, **kwargs)).named(command_name)
-
-        return wrapper
-
-    return decorator

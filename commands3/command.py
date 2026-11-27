@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ParamSpec, cast
+from typing import TYPE_CHECKING
 
 from .coroutine import await_, wait, wait_until
 
@@ -30,8 +30,6 @@ if TYPE_CHECKING:
     from .mechanism import Mechanism
     from .parallel_group import ParallelGroupBuilder
     from .sequential_group import SequentialGroupBuilder
-
-_P = ParamSpec("_P")
 
 __all__ = [
     "DEFAULT_PRIORITY",
@@ -43,8 +41,6 @@ __all__ = [
     "NeedsExecutionBuilderStage",
     "NeedsNameBuilderStage",
     "StagedCommandBuilder",
-    "no_requirements",
-    "requiring",
 ]
 
 # Priority is serialized as a 32-bit signed integer in scheduler telemetry,
@@ -60,7 +56,7 @@ HIGHEST_PRIORITY = 2**31 - 1
 #:
 #: .. code-block:: python
 #:
-#:     @requires_self()
+#:     @command
 #:     async def spin(self) -> GeneratorCommand:
 #:         while True:
 #:             self._motor.set_throttle(0.5)
@@ -394,49 +390,3 @@ class StagedCommandBuilder:
         _throw_if_already_built(self._state)
         self._state.requirements.update(requirements)
         return NeedsExecutionBuilderStage(self._state)
-
-
-def no_requirements(
-    name: str | None = None,
-) -> Callable[[Callable[_P, CommandBodyResult]], Callable[_P, Command]]:
-    def decorator(body: Callable[_P, CommandBodyResult]) -> Callable[_P, Command]:
-        command_name = name or getattr(body, "__name__", repr(body))
-
-        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Command:
-            return Command.no_requirements(lambda: body(*args, **kwargs)).named(
-                command_name
-            )
-
-        return wrapper
-
-    return decorator
-
-
-def requiring(
-    *args: str | Mechanism,
-) -> Callable[[Callable[_P, CommandBodyResult]], Callable[_P, Command]]:
-    name: str | None
-    reqs: tuple[Mechanism, ...]
-    if args and isinstance(args[0], str):
-        name, reqs = args[0], cast("tuple[Mechanism, ...]", args[1:])
-    else:
-        name, reqs = None, cast("tuple[Mechanism, ...]", args)
-
-    def decorator(body: Callable[_P, CommandBodyResult]) -> Callable[_P, Command]:
-        command_name = name or getattr(body, "__name__", repr(body))
-
-        def wrapper(*call_args: _P.args, **call_kwargs: _P.kwargs) -> Command:
-            def bound_body() -> CommandBodyResult:
-                return body(*call_args, **call_kwargs)
-
-            if not reqs:
-                return Command.no_requirements(bound_body).named(command_name)
-            return (
-                Command.requiring(reqs[0], *reqs[1:])
-                .executing(bound_body)
-                .named(command_name)
-            )
-
-        return wrapper
-
-    return decorator

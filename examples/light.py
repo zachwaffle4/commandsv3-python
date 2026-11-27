@@ -7,7 +7,7 @@
 import wpilib
 
 import commands3 as cmd3
-from commands3 import GeneratorCommand, requires_self
+from commands3 import GeneratorCommand, command
 
 
 class Light(cmd3.Mechanism):
@@ -20,7 +20,7 @@ class Light(cmd3.Mechanism):
         # is disabled. Mechanisms that move stay off-limits by default.
         return True
 
-    @requires_self()
+    @command
     async def blink(self) -> GeneratorCommand:
         while True:
             self._output.set(True)
